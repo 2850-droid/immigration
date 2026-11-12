@@ -555,16 +555,18 @@ async function renderSlotsPanel(holder, isOwner) {
 }
 
 // 変更先の月の枠が足りないときの警告文。足りていれば空文字
-async function roomWarning(data, targetMonth) {
+// type：枠を確かめる種別。counted：この招待がすでにその種別の枠に数えられているか（数えられていれば、超過したときだけ警告）
+async function roomWarning(data, targetMonth, type = data.inviteType, counted = false) {
   try {
     const [sSnap, iSnap] = await Promise.all([getDoc(doc(db, 'settings', 'slots')), getDocs(collection(db, 'invites'))]);
     const row = computeSlots(iSnap.docs.map((d) => d.data()), sSnap.exists() ? sSnap.data() : {}, [targetMonth], Date.now())[0];
     const label = formatMonth(targetMonth);
-    if (data.inviteType === '特別') {
+    const full = (left) => (counted ? left < 0 : left <= 0);
+    if (type === '特別') {
       if (!row.special) return `${label}の特別枠が未設定です。`;
-      if (row.special.left <= 0) return `${label}の特別枠は満員です（残り${row.special.left}/${row.special.total}）。`;
-    } else if (row.normal.left <= 0) {
-      return `${label}の普通枠は満員です（残り${row.normal.left}/${row.normal.total}）。`;
+      if (full(row.special.left)) return `${label}の特別枠は${counted ? '超過しています' : '満員です'}（残り${row.special.left}/${row.special.total}）。`;
+    } else if (full(row.normal.left)) {
+      return `${label}の普通枠は${counted ? '超過しています' : '満員です'}（残り${row.normal.left}/${row.normal.total}）。`;
     }
     return '';
   } catch {
@@ -675,14 +677,28 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
     type.value = data.inviteType ?? '未定';
     children.push(
       h('div', { class: 'field' }, h('label', {}, '種別 ', h('span', { class: 'hint' }, 'ゲーム内でIDを照会して決めます')), type),
-      btn('種別を保存', 'secondary', (b) => run(b, () => update({ inviteType: type.value }))),
+      btn('種別を保存', 'secondary', (b) =>
+        run(b, async () => {
+          // 普通・特別に決めるときは、その月の枠が足りているか確かめる（足りなくても、確認のうえ保存できる）
+          if (type.value !== '未定' && type.value !== (data.inviteType ?? '未定')) {
+            const warning = await roomWarning(data, data.scheduledMonth, type.value);
+            if (warning && !confirm(`注意：${warning}\n\nそれでも種別を「${type.value}」にしますか？`)) throw new Error('cancelled');
+          }
+          await update({ inviteType: type.value });
+        }),
+      ),
     );
     if (state === '登録済み') {
       children.push(
         btn('確定する', '', (b) => {
-          const warn = (data.inviteType ?? '未定') === '未定' ? '種別がまだ「未定」です。このまま確定しますか？' : '確定しますか？';
-          if (!confirm(warn)) return;
-          run(b, () => update({ status: '確定', confirmedAt: serverTimestamp() }));
+          const unknown = (data.inviteType ?? '未定') === '未定';
+          run(b, async () => {
+            // すでに数えられている種別が、枠を超えていないかも確かめる
+            const over = unknown ? '' : await roomWarning(data, data.scheduledMonth, data.inviteType, true);
+            const text = unknown ? '種別がまだ「未定」です。このまま確定しますか？' : `${over ? `注意：${over}\n\n` : ''}確定しますか？`;
+            if (!confirm(text)) throw new Error('cancelled');
+            await update({ status: '確定', confirmedAt: serverTimestamp() });
+          });
         }),
       );
     }
