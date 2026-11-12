@@ -13,6 +13,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
   getDocs,
   collection,
   writeBatch,
@@ -280,13 +281,14 @@ async function renderInvitePanel(holder, uid) {
       const rows = snap.docs.map((d) => {
         const data = d.data();
         const state = judgeState(data, Date.now());
-        const row = h('li', { class: 'row' }, h('span', {}, `${formatMonth(data.scheduledMonth) ?? ''}　${state}`));
-        const show = h('button', { type: 'button', class: 'secondary' }, 'URLを表示');
-        show.addEventListener('click', () => {
-          show.replaceWith(urlBox(d.id));
+        const summary = [formatMonth(data.scheduledMonth) ?? '', data.name ?? '', state, data.inviteType ?? ''].filter(Boolean).join('　');
+        const detail = h('div');
+        const toggle = h('button', { type: 'button', class: 'secondary' }, '詳細');
+        toggle.addEventListener('click', () => {
+          if (detail.childNodes.length) detail.replaceChildren();
+          else renderInviteDetail(detail, d.id, data, state, uid, loadList);
         });
-        if (state === '招待済み') row.append(show);
-        return row;
+        return h('li', { class: 'row' }, h('span', {}, summary), toggle, detail);
       });
       list.replaceChildren(card('最近の招待', rows.length ? h('ul', { class: 'list' }, ...rows) : 'まだ招待はありません。'));
     } catch {
@@ -296,6 +298,113 @@ async function renderInvitePanel(holder, uid) {
 
   holder.replaceChildren(card('招待を作る', form), result, list);
   await loadList();
+}
+
+// 招待1件の詳細と操作：種別の決定、確定、取消、期限の延長、メモ
+async function renderInviteDetail(box, token, data, state, uid, reload) {
+  box.style.flex = '1 1 100%';
+  const message = h('p', { class: 'error' });
+  const dl = (label, value) => h('p', { class: 'muted' }, `${label}：${value || '（なし）'}`);
+  const memoInput = h('input', { type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX), 'aria-label': '管理者メモ' });
+  let sendNote = '';
+  try {
+    const n = await getDoc(doc(db, 'invite_notes', token));
+    if (n.exists()) {
+      sendNote = n.data().sendNote ?? '';
+      memoInput.value = n.data().adminMemo ?? '';
+    }
+  } catch {
+    message.textContent = 'メモを読み込めませんでした。';
+  }
+
+  async function run(button, fn) {
+    button.disabled = true;
+    message.textContent = '';
+    try {
+      await fn();
+      await reload();
+    } catch {
+      message.textContent = '操作できませんでした。時間をおいて、もう一度お試しください。';
+      button.disabled = false;
+    }
+  }
+  const update = (fields) => updateDoc(doc(db, 'invites', token), { ...fields, updatedAt: serverTimestamp() });
+  const btn = (label, cls, onClick) => {
+    const b = h('button', { type: 'button', class: cls }, label);
+    b.addEventListener('click', () => onClick(b));
+    return b;
+  };
+
+  const children = [
+    dl('状態', state),
+    dl('予定月', formatMonth(data.scheduledMonth)),
+    dl('名前', data.name),
+    dl('ID', data.gameId),
+    dl('国番号', data.countryNo),
+    dl('同盟', data.alliance),
+    dl('送付先メモ', sendNote),
+  ];
+
+  if (state === '招待済み' || state === '失効') {
+    if (state === '招待済み') children.push(urlBox(token));
+    children.push(
+      btn('期限を延ばす', 'secondary', (b) => {
+        if (!confirm('今から有効期限を延ばし直しますか？')) return;
+        run(b, async () => {
+          let days = 3;
+          try {
+            const snap = await getDoc(doc(db, 'settings', 'slots'));
+            const v = snap.exists() ? snap.data().inviteExpiryDays : null;
+            if (Number.isInteger(v) && v >= 1 && v <= 30) days = v;
+          } catch {
+            // 既定の3日
+          }
+          await update({ expiresAt: Timestamp.fromMillis(Date.now() + days * DAY_MS) });
+        });
+      }),
+    );
+  }
+
+  if (state === '登録済み' || state === '確定') {
+    const type = h('select', { 'aria-label': '招待の種別' }, ...['未定', '普通', '特別'].map((t) => h('option', { value: t }, t)));
+    type.value = data.inviteType ?? '未定';
+    children.push(
+      h('div', { class: 'field' }, h('label', {}, '種別 ', h('span', { class: 'hint' }, 'ゲーム内でIDを照会して決めます')), type),
+      btn('種別を保存', 'secondary', (b) => run(b, () => update({ inviteType: type.value }))),
+    );
+    if (state === '登録済み') {
+      children.push(
+        btn('確定する', '', (b) => {
+          const warn = (data.inviteType ?? '未定') === '未定' ? '種別がまだ「未定」です。このまま確定しますか？' : '確定しますか？';
+          if (!confirm(warn)) return;
+          run(b, () => update({ status: '確定', confirmedAt: serverTimestamp() }));
+        }),
+      );
+    }
+  }
+
+  if (state !== '取消') {
+    children.push(
+      btn('取り消す', 'secondary', (b) => {
+        if (!confirm('この招待を取り消しますか？')) return;
+        run(b, () => update({ status: '取消', cancelledAt: serverTimestamp() }));
+      }),
+    );
+  }
+
+  children.push(
+    h('div', { class: 'field' }, h('label', {}, '管理者メモ'), memoInput),
+    btn('メモを保存', 'secondary', (b) => {
+      const n = validateNote(memoInput.value);
+      if (!n.ok) {
+        message.textContent = n.error;
+        return;
+      }
+      run(b, () => setDoc(doc(db, 'invite_notes', token), { adminMemo: n.value, updatedBy: uid }, { merge: true }));
+    }),
+    message,
+  );
+  box.replaceChildren(...children);
 }
 
 // オーナー用：承認待ちの申請と、移民管理者の名簿
