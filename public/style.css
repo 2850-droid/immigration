@@ -92,3 +92,11 @@ input[type="password"] { font-family: inherit; }
 .card + .card, .card + p { margin-top: 16px; }
 
 select { width: 100%; padding: 10px 12px; font-size: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+
+.row.work { align-items: center; }
+.row.work .work-name { flex: 1 1 100%; font-weight: 600; }
+.row.work .work-id { flex: 1 1 100%; font-size: 1.4rem; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
+.row.work.done .work-name, .row.work.done .work-id { opacity: 0.4; text-decoration: line-through; }
+.row.work.done button:first-of-type { background: var(--muted); }
+.badge { font-size: 0.8rem; font-weight: 400; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+button.small { padding: 6px; font-size: 0.85rem; font-weight: 400; }

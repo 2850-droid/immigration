@@ -17,6 +17,8 @@ import {
   getDocs,
   collection,
   writeBatch,
+  where,
+  deleteField,
   Timestamp,
   query,
   orderBy,
@@ -186,6 +188,9 @@ function logoutButton() {
 function showDashboard(uid, admin) {
   const roleLabel = admin.role === 'owner' ? 'オーナー' : '移民管理者';
   const nodes = [card('移民管理', `${admin.displayName ?? ''}さん（${roleLabel}）としてログイン中です。`)];
+  const workHolder = h('div');
+  nodes.push(workHolder);
+  renderWorkPanel(workHolder, uid);
   const slotsHolder = h('div');
   nodes.push(slotsHolder);
   renderSlotsPanel(slotsHolder, admin.role === 'owner');
@@ -205,6 +210,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 // 招待が変わったときに、月ごとの枠を読み直す（枠の画面が作られたら差し替わる）
 let refreshSlots = () => {};
+let refreshWork = () => {};
 
 // 招待URL。管理画面と同じフォルダの index.html に、#トークン を付ける
 function inviteUrl(token) {
@@ -284,6 +290,7 @@ async function renderInvitePanel(holder, uid) {
   const list = h('div');
   async function loadList() {
     refreshSlots();
+    refreshWork();
     try {
       const snap = await getDocs(query(collection(db, 'invites'), orderBy('createdAt', 'desc'), limit(20)));
       const rows = snap.docs.map((d) => {
@@ -306,6 +313,110 @@ async function renderInvitePanel(holder, uid) {
 
   holder.replaceChildren(card('招待を作る', form), result, list);
   await loadList();
+}
+
+// 移民作業：確定した人のIDを一覧にして、コピーしたらその印を残す。
+// 印は招待の文書ではなく、管理者だけが読める invite_notes に保存する（別の管理者の画面にも引き継がれる）
+async function renderWorkPanel(holder, uid) {
+  const now = new Date();
+  const months = monthOptions(new Date(now.getFullYear(), now.getMonth() - 1, 1), 8);
+  const current = monthOptions(now, 1)[0];
+  const monthSelect = h('select', { id: 'workMonth', 'aria-label': '作業する月' }, ...months.map((m) => h('option', { value: m }, formatMonth(m))));
+  monthSelect.value = current;
+  const body = h('div');
+  holder.replaceChildren(card('移民作業（確定した人のID）', h('div', { class: 'field' }, monthSelect), body));
+
+  let seq = 0;
+  async function load() {
+    const mySeq = ++seq;
+    let rows;
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'invites'), where('status', '==', '確定'), where('scheduledMonth', '==', monthSelect.value)),
+      );
+      rows = await Promise.all(
+        snap.docs.map(async (d) => {
+          let copied = false;
+          try {
+            const n = await getDoc(doc(db, 'invite_notes', d.id));
+            copied = n.exists() && !!n.data().copiedAt;
+          } catch {
+            // 印を読めなければ、未コピーとして扱う
+          }
+          return { token: d.id, data: d.data(), copied };
+        }),
+      );
+    } catch {
+      if (mySeq === seq) body.replaceChildren(h('p', {}, '読み込めませんでした。時間をおいて、もう一度お試しください。'));
+      return;
+    }
+    if (mySeq !== seq) return; // 月を切り替えた場合は、古い結果を捨てる
+    const ms = (r) => (r.data.confirmedAt && typeof r.data.confirmedAt.toMillis === 'function' ? r.data.confirmedAt.toMillis() : 0);
+    rows.sort((a, b) => ms(a) - ms(b) || String(a.data.name).localeCompare(String(b.data.name), 'ja'));
+    if (!rows.length) {
+      body.replaceChildren(h('p', { class: 'muted' }, `${formatMonth(monthSelect.value)}の確定者はいません。`));
+      return;
+    }
+
+    const progress = h('p', { class: 'muted' });
+    const updateProgress = () => {
+      const done = rows.filter((r) => r.copied).length;
+      progress.textContent = `コピー済み ${done} / ${rows.length} 人`;
+    };
+    const message = h('p', { class: 'error' });
+
+    const items = rows.map((r) => {
+      const label = h('span', { class: 'work-name' }, r.data.name ?? '', '　', h('span', { class: 'badge' }, r.data.inviteType ?? '未定'));
+      const idText = h('span', { class: 'work-id' }, r.data.gameId ?? '');
+      const copyBtn = h('button', { type: 'button' }, 'IDをコピー');
+      const undoBtn = h('button', { type: 'button', class: 'secondary small' }, '未コピーに戻す');
+      const li = h('li', { class: 'row work' }, label, idText, copyBtn, undoBtn);
+      const paint = () => {
+        li.classList.toggle('done', r.copied);
+        copyBtn.textContent = r.copied ? '✓ コピー済み（もう一度コピー）' : 'IDをコピー';
+        undoBtn.hidden = !r.copied;
+        updateProgress();
+      };
+      copyBtn.addEventListener('click', async () => {
+        message.textContent = '';
+        try {
+          // クリップボードへの書き込みは、押した直後に行う（ブラウザの制限）
+          await navigator.clipboard.writeText(String(r.data.gameId));
+        } catch {
+          message.textContent = 'コピーできませんでした。IDを長押しして、手でコピーしてください。';
+          return;
+        }
+        r.copied = true;
+        paint();
+        try {
+          await setDoc(doc(db, 'invite_notes', r.token), { copiedAt: serverTimestamp(), copiedBy: uid }, { merge: true });
+        } catch {
+          r.copied = false;
+          paint();
+          message.textContent = 'コピーはできましたが、印を保存できませんでした。通信を確認してください。';
+        }
+      });
+      undoBtn.addEventListener('click', async () => {
+        message.textContent = '';
+        r.copied = false;
+        paint();
+        try {
+          await setDoc(doc(db, 'invite_notes', r.token), { copiedAt: deleteField(), copiedBy: deleteField() }, { merge: true });
+        } catch {
+          r.copied = true;
+          paint();
+          message.textContent = '戻せませんでした。時間をおいて、もう一度お試しください。';
+        }
+      });
+      paint();
+      return li;
+    });
+    body.replaceChildren(progress, h('ul', { class: 'list' }, ...items), message);
+  }
+
+  monthSelect.addEventListener('change', load);
+  refreshWork = load;
+  await load();
 }
 
 // 月ごとの枠の表示。オーナーだけ、設定を変えられる
