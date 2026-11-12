@@ -10,6 +10,8 @@ service cloud.firestore {
     }
 
     // 入力形式（設計書 9.1）
+    // 名前：1文字以上。画面側で20文字までに制限する。ルール側は、文字の数え方の差を見込んで40まで
+    function validName(v) { return v is string && v.size() >= 1 && v.size() <= 40; }
     function validGameId(v)   { return v is string && v.matches('^[0-9]{9}$'); }
     function validCountry(v)  { return v is string && v.matches('^[0-9]{4}$'); }
     // 同盟は任意：空文字、または大文字アルファベット3文字
@@ -23,7 +25,8 @@ service cloud.firestore {
         && request.time < before.expiresAt
         && after.status == '登録済み'
         && after.diff(before).affectedKeys()
-             .hasOnly(['gameId', 'countryNo', 'alliance', 'status', 'registeredAt', 'updatedAt'])
+             .hasOnly(['name', 'gameId', 'countryNo', 'alliance', 'status', 'registeredAt', 'updatedAt'])
+        && validName(after.name)
         && validGameId(after.gameId)
         && validCountry(after.countryNo)
         && validAlliance(after.alliance)

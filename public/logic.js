@@ -4,6 +4,8 @@
 // 招待URLのトークン：英大文字と数字のうち、紛らわしい文字（I、O、0、1）を除いた32種類から16文字
 export const TOKEN_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{16}$/;
 
+export const NAME_MAX = 20;
+
 export const MESSAGES = {
   formTitle: '移民登録フォーム',
   formDesc: '管理者から案内を受けた方は、下の項目を入力してください。入力した内容は管理者だけが見られます。',
@@ -34,14 +36,24 @@ export function parseToken(hash) {
 }
 
 // 登録フォームの入力チェック（設計書 9.1）。全角で入力されても半角に直して受け付ける
-export function validateRegistration({ gameId, countryNo, alliance }) {
+export function validateRegistration({ gameId, countryNo, alliance, name }) {
   const norm = (v) => String(v ?? '').normalize('NFKC').trim();
+  // 名前は記号・漢字も自由に使えるので、変換（NFKC）はせず、前後の空白を除くだけにする
   const values = {
+    name: String(name ?? '').trim(),
     gameId: norm(gameId),
     countryNo: norm(countryNo),
     alliance: norm(alliance).toUpperCase(),
   };
   const errors = {};
+  const nameLength = [...values.name].length; // 絵文字なども1文字と数える
+  if (nameLength < 1) {
+    errors.name = '名前を入力してください';
+  } else if (nameLength > NAME_MAX) {
+    errors.name = `名前は${NAME_MAX}文字までで入力してください`;
+  } else if (/[\u0000-\u001f\u007f]/.test(values.name)) {
+    errors.name = '名前に使えない文字が含まれています';
+  }
   if (!/^[0-9]{9}$/.test(values.gameId)) {
     errors.gameId = 'IDは9桁の数字で入力してください';
   }

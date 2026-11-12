@@ -57,6 +57,7 @@ beforeEach(async () => {
       ...base,
       status: '登録済み',
       expiresAt: future,
+      name: '登録済みの人',
       gameId: '111111111',
       countryNo: '1111',
       alliance: '',
@@ -70,6 +71,7 @@ beforeEach(async () => {
 
 // 登録者が送る内容（書き換えてよい項目だけ）
 const registration = (extra = {}) => ({
+  name: 'テスト太郎★',
   gameId: '123456789',
   countryNo: '1234',
   alliance: 'ABC',
@@ -137,6 +139,9 @@ describe('登録者（未ログイン）', () => {
     await assertFails(updateDoc(ref, registration({ countryNo: '123' })));
     await assertFails(updateDoc(ref, registration({ alliance: 'abc' })));
     await assertFails(updateDoc(ref, registration({ alliance: 'AB' })));
+    await assertFails(updateDoc(ref, registration({ name: '' })));
+    await assertFails(updateDoc(ref, registration({ name: 'あ'.repeat(41) })));
+    await assertFails(updateDoc(ref, registration({ name: 123 })));
   });
 
   it('8d. 招待の作成・削除はできない', async () => {

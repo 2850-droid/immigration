@@ -23,6 +23,7 @@ const samples = [
     {
       status: '登録済み',
       expiresAt: ts(now + 3 * DAY),
+      name: '登録済みの人',
       gameId: '111111111',
       countryNo: '1111',
       alliance: 'ABC',
@@ -36,6 +37,7 @@ const samples = [
       status: '確定',
       inviteType: '普通',
       expiresAt: ts(now + 3 * DAY),
+      name: '確定した人',
       gameId: '222222222',
       countryNo: '2222',
       alliance: '',

@@ -21,30 +21,30 @@ test('トークン：紛らわしい文字、長さ違い、空は無効', () =>
 });
 
 test('入力チェック：正しい入力', () => {
-  const r = validateRegistration({ gameId: '123456789', countryNo: '1234', alliance: 'abc' });
+  const r = validateRegistration({ name: ' テスト★太郎 ', gameId: '123456789', countryNo: '1234', alliance: 'abc' });
   assert.equal(r.ok, true);
-  assert.deepEqual(r.values, { gameId: '123456789', countryNo: '1234', alliance: 'ABC' });
+  assert.deepEqual(r.values, { name: 'テスト★太郎', gameId: '123456789', countryNo: '1234', alliance: 'ABC' });
 });
 
 test('入力チェック：同盟は空欄でもよい（無所属）', () => {
-  const r = validateRegistration({ gameId: '123456789', countryNo: '0123', alliance: '' });
+  const r = validateRegistration({ name: 'A', gameId: '123456789', countryNo: '0123', alliance: '' });
   assert.equal(r.ok, true);
   assert.equal(r.values.countryNo, '0123'); // 先頭の0が残る
   assert.equal(r.values.alliance, '');
 });
 
 test('入力チェック：全角の数字・英字は半角に直して受け付ける', () => {
-  const r = validateRegistration({ gameId: '１２３４５６７８９', countryNo: '１２３４', alliance: 'ＡＢＣ' });
+  const r = validateRegistration({ name: 'ＡＢ', gameId: '１２３４５６７８９', countryNo: '１２３４', alliance: 'ＡＢＣ' });
   assert.equal(r.ok, true);
-  assert.deepEqual(r.values, { gameId: '123456789', countryNo: '1234', alliance: 'ABC' });
+  assert.deepEqual(r.values, { name: 'ＡＢ', gameId: '123456789', countryNo: '1234', alliance: 'ABC' }); // 名前は全角のまま
 });
 
 test('入力チェック：形式違いはエラー', () => {
-  const r = validateRegistration({ gameId: '12345', countryNo: '12345', alliance: 'AB' });
+  const r = validateRegistration({ name: '', gameId: '12345', countryNo: '12345', alliance: 'AB' });
   assert.equal(r.ok, false);
-  assert.ok(r.errors.gameId && r.errors.countryNo && r.errors.alliance);
-  assert.equal(validateRegistration({ gameId: '12345678a', countryNo: '1234', alliance: '' }).ok, false);
-  assert.equal(validateRegistration({ gameId: '123456789', countryNo: '1234', alliance: 'A1C' }).ok, false);
+  assert.ok(r.errors.name && r.errors.gameId && r.errors.countryNo && r.errors.alliance);
+  assert.equal(validateRegistration({ name: 'A', gameId: '12345678a', countryNo: '1234', alliance: '' }).ok, false);
+  assert.equal(validateRegistration({ name: 'A', gameId: '123456789', countryNo: '1234', alliance: 'A1C' }).ok, false);
 });
 
 test('状態：期限内は招待済み、期限切れは失効、それ以外はそのまま', () => {
@@ -63,4 +63,13 @@ test('月の表示', () => {
   assert.equal(formatMonth('2026-01'), '2026年1月');
   assert.equal(formatMonth('2026-13'), null);
   assert.equal(formatMonth(undefined), null);
+});
+
+test('名前：20文字まで（絵文字も1文字）、空・長すぎ・制御文字はエラー', () => {
+  const base = { gameId: '123456789', countryNo: '1234', alliance: '' };
+  assert.equal(validateRegistration({ ...base, name: 'あ'.repeat(20) }).ok, true);
+  assert.equal(validateRegistration({ ...base, name: '😀'.repeat(20) }).ok, true);
+  assert.equal(validateRegistration({ ...base, name: 'あ'.repeat(21) }).ok, false);
+  assert.equal(validateRegistration({ ...base, name: '   ' }).ok, false);
+  assert.equal(validateRegistration({ ...base, name: 'a\nb' }).ok, false);
 });

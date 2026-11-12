@@ -8,7 +8,7 @@ import {
   serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
-import { parseToken, validateRegistration, judgeState, formatMonth, MESSAGES } from './logic.js';
+import { parseToken, validateRegistration, judgeState, formatMonth, MESSAGES, NAME_MAX } from './logic.js';
 
 const db = getFirestore(initializeApp(firebaseConfig));
 if (['localhost', '127.0.0.1'].includes(location.hostname)) {
@@ -81,6 +81,12 @@ async function load() {
 function showForm() {
   const fields = [
     {
+      name: 'name',
+      label: '名前',
+      hint: `ゲーム内の名前。${NAME_MAX}文字まで`,
+      attrs: { autocomplete: 'off' },
+    },
+    {
       name: 'gameId',
       label: 'ID',
       hint: '半角数字9桁',
@@ -130,6 +136,7 @@ function showForm() {
     formError.textContent = '';
     try {
       await updateDoc(doc(db, 'invites', token), {
+        name: result.values.name,
         gameId: result.values.gameId,
         countryNo: result.values.countryNo,
         alliance: result.values.alliance,
