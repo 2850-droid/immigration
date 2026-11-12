@@ -398,12 +398,20 @@ async function renderWorkPanel(holder, uid) {
     const message = h('p', { class: 'error' });
 
     const items = rows.map((r) => {
-      const label = h('span', { class: 'work-name' }, r.data.name ?? '', '　', h('span', { class: 'badge' }, r.data.inviteType ?? '未定'));
+      const sep = () => h('span', { class: 'sep' }, '｜');
+      const label = h(
+        'span',
+        { class: 'work-name' },
+        r.data.name ?? '',
+        sep(),
+        h('span', { class: 'work-country' }, r.data.countryNo ?? ''),
+        sep(),
+        h('span', { class: 'badge' }, r.data.inviteType ?? '未定'),
+      );
       const idText = h('span', { class: 'work-id' }, r.data.gameId ?? '');
       const copyBtn = h('button', { type: 'button' }, 'IDをコピー');
       const undoBtn = h('button', { type: 'button', class: 'secondary small' }, '未コピーに戻す');
       const infoLines = [
-        h('span', { class: 'work-info' }, `国番号：${r.data.countryNo ?? ''}`),
         r.adminMemo ? h('span', { class: 'work-info' }, `メモ：${r.adminMemo}`) : null,
         r.sendNote ? h('span', { class: 'work-info' }, `送付先メモ：${r.sendNote}`) : null,
       ].filter(Boolean);
