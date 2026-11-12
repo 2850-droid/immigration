@@ -27,6 +27,7 @@ import { firebaseConfig } from './firebase-config.js';
 import {
   adminIdToEmail, validateAdminLogin, validateAdminSignup, ADMIN_NAME_MAX,
   generateToken, monthOptions, validateNote, formatMonth, judgeState, NOTE_MAX,
+  computeSlots, validateSettings, DEFAULT_SETTINGS,
 } from './logic.js';
 
 const app = initializeApp(firebaseConfig);
@@ -185,6 +186,9 @@ function logoutButton() {
 function showDashboard(uid, admin) {
   const roleLabel = admin.role === 'owner' ? 'オーナー' : '移民管理者';
   const nodes = [card('移民管理', `${admin.displayName ?? ''}さん（${roleLabel}）としてログイン中です。`)];
+  const slotsHolder = h('div');
+  nodes.push(slotsHolder);
+  renderSlotsPanel(slotsHolder, admin.role === 'owner');
   const invitesHolder = h('div');
   nodes.push(invitesHolder);
   renderInvitePanel(invitesHolder, uid);
@@ -198,6 +202,9 @@ function showDashboard(uid, admin) {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// 招待が変わったときに、月ごとの枠を読み直す（枠の画面が作られたら差し替わる）
+let refreshSlots = () => {};
 
 // 招待URL。管理画面と同じフォルダの index.html に、#トークン を付ける
 function inviteUrl(token) {
@@ -276,6 +283,7 @@ async function renderInvitePanel(holder, uid) {
 
   const list = h('div');
   async function loadList() {
+    refreshSlots();
     try {
       const snap = await getDocs(query(collection(db, 'invites'), orderBy('createdAt', 'desc'), limit(20)));
       const rows = snap.docs.map((d) => {
@@ -298,6 +306,94 @@ async function renderInvitePanel(holder, uid) {
 
   holder.replaceChildren(card('招待を作る', form), result, list);
   await loadList();
+}
+
+// 月ごとの枠の表示。オーナーだけ、設定を変えられる
+async function renderSlotsPanel(holder, isOwner) {
+  const body = h('div');
+  holder.replaceChildren(card('月ごとの枠', body));
+  async function load() {
+    let settings = null;
+    let invites;
+    try {
+      const [sSnap, iSnap] = await Promise.all([getDoc(doc(db, 'settings', 'slots')), getDocs(collection(db, 'invites'))]);
+      settings = sSnap.exists() ? sSnap.data() : null;
+      invites = iSnap.docs.map((d) => d.data());
+    } catch {
+      body.replaceChildren(h('p', {}, '読み込めませんでした。'));
+      return;
+    }
+    const nodes = [];
+    if (!settings || !settings.specialBaseMonth) {
+      nodes.push(h('p', { class: 'muted' }, isOwner ? '枠の設定がまだありません。下の「枠の設定」で基準月を決めてください。' : '枠の設定がまだありません。オーナーが設定すると表示されます。'));
+    }
+    const rows = computeSlots(invites, settings ?? {}, monthOptions(new Date(), 6), Date.now()).map((r) => {
+      const sp = r.special ? `特別 残り${r.special.left}/${r.special.total}` : '特別 未設定';
+      return h(
+        'li',
+        { class: 'row' },
+        h('span', {}, `${formatMonth(r.month)}　普通 残り${r.normal.left}/${r.normal.total}　${sp}　未定 ${r.undecided}件`),
+      );
+    });
+    nodes.push(h('ul', { class: 'list' }, ...rows));
+    nodes.push(h('p', { class: 'muted' }, '使った枠は、種別を決めた「登録済み」「確定」の招待です。取消すると戻ります。未定は、種別がまだ決まっていない招待の件数です。'));
+    if (isOwner) nodes.push(settingsForm(settings));
+    body.replaceChildren(...nodes);
+  }
+
+  function settingsForm(settings) {
+    const cur = { ...DEFAULT_SETTINGS, specialBaseMonth: monthOptions(new Date(), 1)[0], ...(settings ?? {}) };
+    const defs = [
+      ['normalPerMonth', '普通の枠（月ごと）'],
+      ['specialCap', '特別の上限'],
+      ['specialMonthlyGain', '特別の毎月の増加'],
+      ['specialBaseAvailable', '基準月の特別枠'],
+      ['inviteExpiryDays', '招待の有効日数'],
+    ];
+    const f = {};
+    const nodes = defs.map(([key, label]) => {
+      f[key] = field(key, label, '', { inputmode: 'numeric', maxlength: '3' });
+      f[key].input.value = String(cur[key]);
+      return f[key].node;
+    });
+    const baseSelect = h('select', { id: 'specialBaseMonth' }, ...monthOptions(new Date(), 12).map((m) => h('option', { value: m }, formatMonth(m))));
+    if (![...baseSelect.options].some((o) => o.value === cur.specialBaseMonth)) {
+      baseSelect.prepend(h('option', { value: cur.specialBaseMonth }, formatMonth(cur.specialBaseMonth) ?? cur.specialBaseMonth));
+    }
+    baseSelect.value = cur.specialBaseMonth;
+    const baseError = h('p', { class: 'error' });
+    const msg = h('p', { class: 'error' });
+    const save = h('button', { type: 'submit' }, '枠の設定を保存');
+    const form = h(
+      'form',
+      { novalidate: '' },
+      h('h2', {}, '枠の設定（オーナーのみ）'),
+      ...nodes,
+      h('div', { class: 'field' }, h('label', { for: 'specialBaseMonth' }, '特別枠の基準月 ', h('span', { class: 'hint' }, 'この月の特別枠を「基準月の特別枠」とし、翌月から繰り越して計算します')), baseSelect, baseError),
+      msg,
+      save,
+    );
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const r = validateSettings({ ...Object.fromEntries(defs.map(([k]) => [k, f[k].input.value])), specialBaseMonth: baseSelect.value });
+      for (const [k] of defs) f[k].error.textContent = r.errors[k] ?? '';
+      baseError.textContent = r.errors.specialBaseMonth ?? '';
+      if (!r.ok) return;
+      save.disabled = true;
+      msg.textContent = '';
+      try {
+        await setDoc(doc(db, 'settings', 'slots'), r.values);
+        await load();
+      } catch {
+        msg.textContent = '保存できませんでした。時間をおいて、もう一度お試しください。';
+        save.disabled = false;
+      }
+    });
+    return form;
+  }
+
+  refreshSlots = load;
+  await load();
 }
 
 // 招待1件の詳細と操作：種別の決定、確定、取消、期限の延長、メモ

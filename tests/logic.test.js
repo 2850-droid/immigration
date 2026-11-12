@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseToken, validateRegistration, judgeState, formatMonth,
   adminIdToEmail, validateAdminLogin, validateAdminSignup,
-  generateToken, monthOptions, validateNote,
+  generateToken, monthOptions, validateNote, nextMonth, validateSettings, computeSlots,
 } from '../public/logic.js';
 
 test('トークン：正しい形式、小文字・ハイフン・空白は許す', () => {
@@ -118,4 +118,38 @@ test('メモ：100文字まで・制御文字なし', () => {
   assert.equal(validateNote('あ'.repeat(100)).ok, true);
   assert.equal(validateNote('あ'.repeat(101)).ok, false);
   assert.equal(validateNote('a\nb').ok, false);
+});
+
+test('月の繰り上げ', () => {
+  assert.equal(nextMonth('2026-12'), '2027-01');
+  assert.equal(nextMonth('2026-03'), '2026-04');
+});
+
+test('枠の設定：範囲チェック', () => {
+  const ok = { normalPerMonth: '35', specialCap: '3', specialMonthlyGain: '1', specialBaseAvailable: '3', inviteExpiryDays: '3', specialBaseMonth: '2026-11' };
+  assert.equal(validateSettings(ok).ok, true);
+  assert.equal(validateSettings({ ...ok, inviteExpiryDays: '0' }).ok, false);
+  assert.equal(validateSettings({ ...ok, specialCap: '-1' }).ok, false);
+  assert.equal(validateSettings({ ...ok, specialBaseMonth: '' }).ok, false);
+});
+
+test('枠の計算：普通・特別の繰り越し・取消で戻る・未定', () => {
+  const NOW = Date.UTC(2026, 10, 12);
+  const future = { toMillis: () => NOW + 86400000 };
+  const inv = (scheduledMonth, inviteType, status) => ({ scheduledMonth, inviteType, status, expiresAt: future });
+  const settings = { normalPerMonth: 35, specialCap: 3, specialMonthlyGain: 1, specialBaseMonth: '2026-11', specialBaseAvailable: 2 };
+  const invites = [
+    inv('2026-11', '特別', '確定'), // 11月の特別 1使用 → 残り1
+    inv('2026-11', '普通', '登録済み'),
+    inv('2026-11', '特別', '取消'), // 戻る
+    inv('2026-12', '未定', '登録済み'),
+    inv('2026-12', '未定', '招待済み'),
+  ];
+  const [nov, dec, jan] = computeSlots(invites, settings, ['2026-11', '2026-12', '2027-01'], NOW);
+  assert.deepEqual(nov.special, { total: 2, used: 1, left: 1 });
+  assert.deepEqual(nov.normal, { total: 35, used: 1, left: 34 });
+  assert.equal(dec.special.total, 2); // min(3, 1+1)
+  assert.equal(dec.undecided, 2);
+  assert.equal(jan.special.total, 3); // min(3, 2+1)
+  assert.equal(computeSlots([], settings, ['2026-10'], NOW)[0].special, null); // 基準月より前
 });

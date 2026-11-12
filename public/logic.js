@@ -149,3 +149,84 @@ export function validateNote(note) {
   if (/[\u0000-\u001f\u007f]/.test(value)) return { ok: false, error: 'メモに使えない文字が含まれています', value };
   return { ok: true, error: '', value };
 }
+
+// ---- 月ごとの枠 ----
+
+export const DEFAULT_SETTINGS = {
+  normalPerMonth: 35,
+  specialCap: 3,
+  specialMonthlyGain: 1,
+  specialBaseMonth: '',
+  specialBaseAvailable: 3,
+  inviteExpiryDays: 3,
+};
+
+// '2026-12' → '2027-01'
+export function nextMonth(m) {
+  const [y, mo] = m.split('-').map(Number);
+  return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`;
+}
+
+// 枠の設定の入力チェック。値はすべて整数
+export function validateSettings(input) {
+  const ranges = {
+    normalPerMonth: [0, 999, '普通の枠（月ごと）'],
+    specialCap: [0, 99, '特別の上限'],
+    specialMonthlyGain: [0, 99, '特別の毎月の増加'],
+    specialBaseAvailable: [0, 99, '基準月の特別枠'],
+    inviteExpiryDays: [1, 30, '招待の有効日数'],
+  };
+  const values = {};
+  const errors = {};
+  for (const [key, [min, max, label]] of Object.entries(ranges)) {
+    const raw = String(input[key] ?? '').normalize('NFKC').trim();
+    const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(n) || n < min || n > max) errors[key] = `${label}は${min}〜${max}の整数にしてください`;
+    else values[key] = n;
+  }
+  const base = String(input.specialBaseMonth ?? '');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(base)) errors.specialBaseMonth = '基準月を選んでください';
+  else values.specialBaseMonth = base;
+  return { ok: Object.keys(errors).length === 0, errors, values };
+}
+
+// 月ごとの枠を計算する。invites は { scheduledMonth, inviteType, status, expiresAt } の配列。
+// 使った枠は「登録済み」「確定」で種別が決まっているもの。取消は数えない（戻る）。
+// 種別が未定で、有効な招待（期限内の招待済み、登録済み、確定）は「未定」として別に数える。
+export function computeSlots(invites, settings, months, nowMs) {
+  const s = { ...DEFAULT_SETTINGS, ...settings };
+  const used = {};
+  const bucket = (m) => (used[m] ??= { normal: 0, special: 0, undecided: 0 });
+  for (const inv of invites) {
+    const state = judgeState(inv, nowMs);
+    if (!['招待済み', '登録済み', '確定'].includes(state)) continue;
+    const b = bucket(inv.scheduledMonth);
+    if (state === '招待済み' || inv.inviteType === '未定' || !inv.inviteType) b.undecided++;
+    else if (inv.inviteType === '普通') b.normal++;
+    else if (inv.inviteType === '特別') b.special++;
+  }
+  // 特別枠は基準月から順に繰り越して計算する
+  const specialTotal = {};
+  if (s.specialBaseMonth) {
+    const last = months[months.length - 1];
+    let m = s.specialBaseMonth;
+    let prev = null;
+    for (let i = 0; i < 60 && m <= last; i++) {
+      specialTotal[m] = prev === null
+        ? s.specialBaseAvailable
+        : Math.min(s.specialCap, Math.max(0, specialTotal[prev] - bucket(prev).special) + s.specialMonthlyGain);
+      prev = m;
+      m = nextMonth(m);
+    }
+  }
+  return months.map((month) => {
+    const b = bucket(month);
+    const total = specialTotal[month];
+    return {
+      month,
+      normal: { total: s.normalPerMonth, used: b.normal, left: s.normalPerMonth - b.normal },
+      special: total === undefined ? null : { total, used: b.special, left: total - b.special },
+      undecided: b.undecided,
+    };
+  });
+}
