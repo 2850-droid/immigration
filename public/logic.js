@@ -250,3 +250,23 @@ export function filterInvites(items, cond, nowMs) {
     return true;
   });
 }
+
+// ---- ブラックリスト ----
+
+export const BL_NAME_MAX = 40;
+export const BL_REASON_MAX = 100;
+
+// 追加の入力チェック。IDは9桁の数字（全角でも可）、名前は任意、理由は必須
+export function validateBlacklistEntry({ gameId, name, reason }) {
+  const id = String(gameId ?? '').normalize('NFKC').trim();
+  const nm = String(name ?? '').trim();
+  const rs = String(reason ?? '').trim();
+  const errors = {};
+  if (!/^[0-9]{9}$/.test(id)) errors.gameId = 'IDは9桁の数字で入力してください';
+  if ([...nm].length > BL_NAME_MAX) errors.name = `名前は${BL_NAME_MAX}文字までにしてください`;
+  else if (/[\u0000-\u001f\u007f]/.test(nm)) errors.name = '名前に使えない文字が含まれています';
+  if ([...rs].length < 1) errors.reason = '理由を入力してください';
+  else if ([...rs].length > BL_REASON_MAX) errors.reason = `理由は${BL_REASON_MAX}文字までにしてください`;
+  else if (/[\u0000-\u001f\u007f]/.test(rs)) errors.reason = '理由に使えない文字が含まれています';
+  return { ok: Object.keys(errors).length === 0, errors, values: { gameId: id, name: nm, reason: rs } };
+}

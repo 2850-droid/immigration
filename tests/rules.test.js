@@ -260,3 +260,52 @@ describe('管理者の申請（ログイン済みだが、まだ権限のない�
     await assertFails(setDoc(doc(user(), 'admins', 'user2'), { role: 'owner', displayName: '希望者', createdAt: serverTimestamp() }));
   });
 });
+
+describe('ブラックリスト', () => {
+  const entry = (extra = {}) => ({
+    name: 'テスト',
+    reason: '迷惑行為',
+    createdAt: serverTimestamp(),
+    addedBy: 'mgr1',
+    ...extra,
+  });
+
+  it('登録者（未ログイン）・管理者ではない人は、読むことも書くこともできない', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'blacklist', '999999999'), { name: '', reason: 'x', createdAt: Timestamp.now(), addedBy: 'admin1' });
+    });
+    for (const db of [env.unauthenticatedContext().firestore(), env.authenticatedContext('stranger').firestore()]) {
+      await assertFails(getDoc(doc(db, 'blacklist', '999999999')));
+      await assertFails(getDocs(collection(db, 'blacklist')));
+      await assertFails(setDoc(doc(db, 'blacklist', '123456789'), entry()));
+      await assertFails(deleteDoc(doc(db, 'blacklist', '999999999')));
+    }
+  });
+
+  it('移民管理者・オーナーは、追加・読み取り・削除できる', async () => {
+    const mgr = env.authenticatedContext('mgr1').firestore();
+    await assertSucceeds(setDoc(doc(mgr, 'blacklist', '123456789'), entry()));
+    const snap = await assertSucceeds(getDoc(doc(mgr, 'blacklist', '123456789')));
+    assert.equal(snap.data().reason, '迷惑行為');
+    await assertSucceeds(getDocs(collection(mgr, 'blacklist')));
+    const owner = env.authenticatedContext('admin1').firestore();
+    await assertSucceeds(deleteDoc(doc(owner, 'blacklist', '123456789')));
+  });
+
+  it('IDが9桁の数字でない、理由が空・長すぎる、余計な項目、他人の名前での追加は拒否される', async () => {
+    const mgr = env.authenticatedContext('mgr1').firestore();
+    await assertFails(setDoc(doc(mgr, 'blacklist', '12345678'), entry()));
+    await assertFails(setDoc(doc(mgr, 'blacklist', 'abcdefghi'), entry()));
+    await assertFails(setDoc(doc(mgr, 'blacklist', '123456789'), entry({ reason: '' })));
+    await assertFails(setDoc(doc(mgr, 'blacklist', '123456789'), entry({ reason: 'あ'.repeat(101) })));
+    await assertFails(setDoc(doc(mgr, 'blacklist', '123456789'), entry({ extra: 1 })));
+    await assertFails(setDoc(doc(mgr, 'blacklist', '123456789'), entry({ addedBy: 'admin1' })));
+    await assertFails(setDoc(doc(mgr, 'blacklist', '123456789'), entry({ createdAt: Timestamp.fromMillis(1) })));
+  });
+
+  it('登録済みの項目は、上書き（更新）できない', async () => {
+    const mgr = env.authenticatedContext('mgr1').firestore();
+    await assertSucceeds(setDoc(doc(mgr, 'blacklist', '123456789'), entry()));
+    await assertFails(setDoc(doc(mgr, 'blacklist', '123456789'), entry({ reason: '書き換え' })));
+  });
+});

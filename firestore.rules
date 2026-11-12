@@ -51,6 +51,23 @@ service cloud.firestore {
       allow update: if isAdmin() || isRegistration();
     }
 
+    // ブラックリスト。文書IDがゲームのID（9桁）。読み書きは管理者全員（登録者には見せない）
+    function validBlacklistEntry(d) {
+      return d.keys().hasOnly(['name', 'reason', 'createdAt', 'addedBy'])
+        && d.name is string && d.name.size() <= 40
+        && d.reason is string && d.reason.size() >= 1 && d.reason.size() <= 100
+        && d.addedBy == request.auth.uid;
+    }
+    match /blacklist/{gameId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && validGameId(gameId)
+        && validBlacklistEntry(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow delete: if isAdmin();
+      allow update: if false;
+    }
+
     // 管理者用メモ（送付先メモ・管理者メモ）
     match /invite_notes/{token} {
       allow read, write: if isAdmin();

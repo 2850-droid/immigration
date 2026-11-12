@@ -15,6 +15,7 @@ import {
   setDoc,
   updateDoc,
   getDocs,
+  deleteDoc,
   collection,
   writeBatch,
   where,
@@ -30,6 +31,7 @@ import {
   adminIdToEmail, validateAdminLogin, validateAdminSignup, ADMIN_NAME_MAX,
   generateToken, monthOptions, validateNote, formatMonth, judgeState, NOTE_MAX,
   computeSlots, validateSettings, DEFAULT_SETTINGS, filterInvites,
+  validateBlacklistEntry, BL_NAME_MAX, BL_REASON_MAX,
 } from './logic.js';
 
 const app = initializeApp(firebaseConfig);
@@ -196,6 +198,7 @@ function showDashboard(uid, admin) {
     { id: 'invites', label: '招待', render: (el) => renderInvitePanel(el, uid) },
     { id: 'slots', label: '枠', render: (el) => renderSlotsPanel(el, isOwner) },
   ];
+  tabs.push({ id: 'blacklist', label: 'ブラックリスト', render: (el) => renderBlacklistPanel(el, uid) });
   if (isOwner) tabs.push({ id: 'admins', label: '管理者', render: (el) => renderOwnerPanel(el, uid) });
 
   let saved = null;
@@ -237,6 +240,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // 招待が変わったときに、月ごとの枠を読み直す（枠の画面が作られたら差し替わる）
 let refreshSlots = () => {};
 let refreshWork = () => {};
+let refreshInviteList = () => {};
+
+// ブラックリスト全体（ID → 登録内容）。読めなければ null
+async function fetchBlacklist() {
+  try {
+    const snap = await getDocs(collection(db, 'blacklist'));
+    return new Map(snap.docs.map((d) => [d.id, d.data()]));
+  } catch {
+    return null;
+  }
+}
+
+// 1件の照会。{ hit, entry, failed }
+async function checkBlacklist(gameId) {
+  if (!gameId) return { hit: false, entry: null, failed: false };
+  try {
+    const snap = await getDoc(doc(db, 'blacklist', String(gameId)));
+    return { hit: snap.exists(), entry: snap.exists() ? snap.data() : null, failed: false };
+  } catch {
+    return { hit: false, entry: null, failed: true };
+  }
+}
 
 // 招待URL。管理画面と同じフォルダの index.html に、#トークン を付ける
 function inviteUrl(token) {
@@ -318,6 +343,7 @@ async function renderInvitePanel(holder, uid) {
   let all = [];
   let truncated = false;
   let loadError = false;
+  let blMap = new Map();
 
   const sel = (id, label, options) => {
     const el = h('select', { id, 'aria-label': label }, ...options.map(([v, t]) => h('option', { value: v }, t)));
@@ -328,10 +354,12 @@ async function renderInvitePanel(holder, uid) {
   const monthSel = sel('f-month', '予定月', [['', '予定月：すべて'], ...monthOptions(new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1), 14).map((m) => [m, formatMonth(m)])]);
   const typeSel = sel('f-type', '種別', [['', '種別：すべて'], ['未定', '未定'], ['普通', '普通'], ['特別', '特別']]);
   const keyword = h('input', { id: 'f-keyword', type: 'search', placeholder: '名前・ID・国番号・同盟・メモ', autocomplete: 'off', 'aria-label': 'キーワード' });
+  const blOnly = h('input', { id: 'f-bl', type: 'checkbox' });
+  const blLabel = h('label', { for: 'f-bl', class: 'check' }, blOnly, ' ブラックリスト該当のみ');
   const clear = h('button', { type: 'button', class: 'secondary small' }, '条件をクリア');
   const count = h('p', { class: 'muted' });
   const listBody = h('div');
-  const filterBox = h('div', { class: 'filters' }, keyword, stateSel, monthSel, typeSel, clear);
+  const filterBox = h('div', { class: 'filters' }, keyword, stateSel, monthSel, typeSel, blLabel, clear);
 
   function render() {
     if (loadError) {
@@ -340,26 +368,28 @@ async function renderInvitePanel(holder, uid) {
       return;
     }
     const cond = { state: stateSel.value, month: monthSel.value, type: typeSel.value, keyword: keyword.value };
-    const shown = filterInvites(all, cond, Date.now());
-    const filtered = Object.values(cond).some(Boolean);
+    const shown = filterInvites(all, cond, Date.now()).filter((i) => !blOnly.checked || (i.data.gameId && blMap.has(i.data.gameId)));
+    const filtered = Object.values(cond).some(Boolean) || blOnly.checked;
     count.textContent = `${filtered ? `${shown.length}件（全${all.length}件）` : `${all.length}件`}${truncated ? `　※新しい${FETCH_LIMIT}件までを表示しています` : ''}`;
     const rows = shown.map(({ token, data }) => {
       const state = judgeState(data, Date.now());
-      const summary = [formatMonth(data.scheduledMonth) ?? '', data.name ?? '', state, data.inviteType ?? ''].filter(Boolean).join('　');
+      const flagged = !!(data.gameId && blMap.has(data.gameId));
+      const summary = [flagged ? '⚠' : '', formatMonth(data.scheduledMonth) ?? '', data.name ?? '', state, data.inviteType ?? ''].filter(Boolean).join('　');
       const detail = h('div');
       const toggle = h('button', { type: 'button', class: 'secondary' }, '詳細');
       toggle.addEventListener('click', () => {
         if (detail.childNodes.length) detail.replaceChildren();
         else renderInviteDetail(detail, token, data, state, uid, loadList);
       });
-      return h('li', { class: 'row' }, h('span', {}, summary), toggle, detail);
+      return h('li', { class: flagged ? 'row flagged' : 'row' }, h('span', {}, summary), toggle, detail);
     });
     listBody.replaceChildren(rows.length ? h('ul', { class: 'list' }, ...rows) : h('p', { class: 'muted' }, all.length ? '条件に合う招待はありません。' : 'まだ招待はありません。'));
   }
-  for (const el of [stateSel, monthSel, typeSel]) el.addEventListener('change', render);
+  for (const el of [stateSel, monthSel, typeSel, blOnly]) el.addEventListener('change', render);
   keyword.addEventListener('input', render);
   clear.addEventListener('click', () => {
     stateSel.value = monthSel.value = typeSel.value = keyword.value = '';
+    blOnly.checked = false;
     render();
   });
 
@@ -374,6 +404,7 @@ async function renderInvitePanel(holder, uid) {
         getDocs(collection(db, 'invite_notes')).catch(() => null),
       ]);
       const noteMap = new Map(notes ? notes.docs.map((d) => [d.id, d.data()]) : []);
+      blMap = (await fetchBlacklist()) ?? new Map();
       all = snap.docs.map((d) => ({ token: d.id, data: d.data(), note: noteMap.get(d.id) }));
       truncated = snap.size >= FETCH_LIMIT;
       loadError = false;
@@ -384,6 +415,7 @@ async function renderInvitePanel(holder, uid) {
   }
 
   holder.replaceChildren(card('招待を作る', form), result, list);
+  refreshInviteList = loadList;
   await loadList();
 }
 
@@ -402,6 +434,7 @@ async function renderWorkPanel(holder, uid) {
   async function load() {
     const mySeq = ++seq;
     let rows;
+    const blMap = await fetchBlacklist();
     try {
       const snap = await getDocs(
         query(collection(db, 'invites'), where('status', '==', '確定'), where('scheduledMonth', '==', monthSelect.value)),
@@ -421,7 +454,7 @@ async function renderWorkPanel(holder, uid) {
           } catch {
             // 読めなければ、未コピー・メモなしとして扱う
           }
-          return { token: d.id, data: d.data(), copied, sendNote, adminMemo };
+          return { token: d.id, data: d.data(), copied, sendNote, adminMemo, bl: blMap ? blMap.get(d.data().gameId) ?? null : null };
         }),
       );
     } catch {
@@ -446,6 +479,7 @@ async function renderWorkPanel(holder, uid) {
     const items = rows.map((r) => {
       // 種別｜国番号｜名前｜同盟（同盟は未入力なら出さない）
       const parts = [
+        ...(r.bl ? [h('span', { class: 'bl-flag' }, '⚠ BL')] : []),
         h('span', { class: 'badge' }, r.data.inviteType ?? '未定'),
         h('span', { class: 'work-country' }, r.data.countryNo ?? ''),
         h('span', {}, r.data.name ?? ''),
@@ -472,6 +506,7 @@ async function renderWorkPanel(holder, uid) {
       };
       copyBtn.addEventListener('click', async () => {
         message.textContent = '';
+        if (r.bl && !confirm(`ブラックリストに登録されているIDです（理由：${r.bl.reason}）。コピーしますか？`)) return;
         try {
           // クリップボードへの書き込みは、押した直後に行う（ブラウザの制限）
           await navigator.clipboard.writeText(String(r.data.gameId));
@@ -509,6 +544,117 @@ async function renderWorkPanel(holder, uid) {
 
   monthSelect.addEventListener('change', load);
   refreshWork = load;
+  await load();
+}
+
+// ブラックリスト：追加・一覧・削除。文書IDがそのままゲームのID
+async function renderBlacklistPanel(holder, uid) {
+  const idF = field('bl-id', 'ID', '半角数字9桁', { inputmode: 'numeric', maxlength: '9' });
+  const nameF = field('bl-name', '名前', `任意。${BL_NAME_MAX}文字まで`);
+  const reasonF = field('bl-reason', '理由', `必須。${BL_REASON_MAX}文字まで`);
+  const msg = h('p', { class: 'error' });
+  const add = h('button', { type: 'submit' }, 'ブラックリストに追加');
+  const form = h('form', { novalidate: '' }, idF.node, nameF.node, reasonF.node, msg, add);
+
+  const search = h('input', { type: 'search', placeholder: 'ID・名前・理由で検索', autocomplete: 'off', 'aria-label': '検索' });
+  const count = h('p', { class: 'muted' });
+  const listBody = h('div');
+  let entries = [];
+  let failed = false;
+
+  function render() {
+    if (failed) {
+      listBody.replaceChildren(h('p', {}, '読み込めませんでした。'));
+      count.textContent = '';
+      return;
+    }
+    const words = search.value.normalize('NFKC').toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = entries.filter((e) => {
+      const text = [e.id, e.name, e.reason].join('\n').normalize('NFKC').toLowerCase();
+      return words.every((w) => text.includes(w));
+    });
+    count.textContent = words.length ? `${shown.length}件（全${entries.length}件）` : `${entries.length}件`;
+    const rows = shown.map((e) => {
+      const del = h('button', { type: 'button', class: 'secondary small' }, '削除');
+      del.addEventListener('click', async () => {
+        if (!confirm(`ID ${e.id} をブラックリストから外しますか？`)) return;
+        del.disabled = true;
+        try {
+          await deleteDoc(doc(db, 'blacklist', e.id));
+          await load();
+          refreshInviteList();
+        } catch {
+          del.disabled = false;
+          msg.textContent = '削除できませんでした。時間をおいて、もう一度お試しください。';
+        }
+      });
+      return h(
+        'li',
+        { class: 'row' },
+        ...[
+          h('span', { class: 'work-id' }, e.id),
+          e.name ? h('span', { class: 'work-name' }, e.name) : null,
+          h('span', { class: 'work-info' }, `理由：${e.reason}`),
+          del,
+        ].filter(Boolean),
+      );
+    });
+    listBody.replaceChildren(rows.length ? h('ul', { class: 'list' }, ...rows) : h('p', { class: 'muted' }, entries.length ? '条件に合う登録はありません。' : '登録はまだありません。'));
+  }
+  search.addEventListener('input', render);
+
+  async function load() {
+    const map = await fetchBlacklist();
+    failed = map === null;
+    entries = map ? [...map].map(([id, d]) => ({ id, ...d })).sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)) : [];
+    render();
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    msg.textContent = '';
+    const r = validateBlacklistEntry({ gameId: idF.input.value, name: nameF.input.value, reason: reasonF.input.value });
+    idF.error.textContent = r.errors.gameId ?? '';
+    nameF.error.textContent = r.errors.name ?? '';
+    reasonF.error.textContent = r.errors.reason ?? '';
+    if (!r.ok) return;
+    add.disabled = true;
+    try {
+      const exists = await getDoc(doc(db, 'blacklist', r.values.gameId));
+      if (exists.exists()) {
+        msg.textContent = 'このIDはすでに登録されています。内容を変えたい場合は、削除してから登録し直してください。';
+        add.disabled = false;
+        return;
+      }
+      await setDoc(doc(db, 'blacklist', r.values.gameId), {
+        name: r.values.name,
+        reason: r.values.reason,
+        createdAt: serverTimestamp(),
+        addedBy: uid,
+      });
+      // すでにこのIDの招待があれば知らせる（取消すかどうかは管理者が決める）
+      let note = '';
+      try {
+        const inv = await getDocs(query(collection(db, 'invites'), where('gameId', '==', r.values.gameId)));
+        const live = inv.docs.map((d) => d.data()).filter((d) => d.status !== '取消');
+        if (live.length) note = `このIDの招待がすでに${live.length}件あります（${live.map((d) => d.status).join('、')}）。必要なら「招待」タブで取り消してください。`;
+      } catch {
+        // 照会できなくても、登録は済んでいる
+      }
+      idF.input.value = nameF.input.value = reasonF.input.value = '';
+      msg.textContent = note;
+      await load();
+      refreshInviteList();
+    } catch {
+      msg.textContent = '追加できませんでした。時間をおいて、もう一度お試しください。';
+    }
+    add.disabled = false;
+  });
+
+  holder.replaceChildren(
+    card('ブラックリストに追加', h('p', { class: 'muted' }, '登録したIDは、招待の保存・確定のときに自動で照会され、該当すると警告が出ます。登録者の画面には出ません。'), form),
+    card('登録済み', search, count, listBody),
+  );
   await load();
 }
 
@@ -674,6 +820,8 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
     dl('送付先メモ', sendNote),
   ];
   if (state === '取消') children.push(dl('取消の理由', cancelReason));
+  const bl0 = await checkBlacklist(data.gameId);
+  if (bl0.hit) children.unshift(h('p', { class: 'error bl-banner' }, `⚠ ブラックリストに登録されているIDです。理由：${bl0.entry.reason}${bl0.entry.name ? `（登録名：${bl0.entry.name}）` : ''}`));
 
   // 招待済み・失効：URLの表示と、期限の延長
   if (state === '招待済み' || state === '失効') {
@@ -739,6 +887,10 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
 
     // 枠の確認（足りなくても、確認のうえ進める）
     const notes = [];
+    // ブラックリストの照会（保存・確定のたびに行う）
+    const bl = await checkBlacklist(data.gameId);
+    if (bl.hit) notes.push(`ブラックリストに登録されているIDです（理由：${bl.entry.reason}）。`);
+    if (bl.failed) notes.push('ブラックリストを確認できませんでした。');
     if ((typeChanged && newType !== '未定') || monthChanged) {
       const w = await roomWarning(data, newMonth, newType);
       if (w) notes.push(w);

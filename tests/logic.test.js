@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseToken, validateRegistration, judgeState, formatMonth,
   adminIdToEmail, validateAdminLogin, validateAdminSignup,
-  generateToken, monthOptions, validateNote, nextMonth, validateSettings, computeSlots, filterInvites,
+  generateToken, monthOptions, validateNote, nextMonth, validateSettings, computeSlots, filterInvites, validateBlacklistEntry,
 } from '../public/logic.js';
 
 test('トークン：正しい形式、小文字・ハイフン・空白は許す', () => {
@@ -177,4 +177,13 @@ test('招待の絞り込み：状態・月・種別・キーワード', () => {
   assert.equal(f({ keyword: 'a さん' }), 1); // 送付先メモ、空白区切りはすべてを含むもの
   assert.equal(f({ keyword: 'abc 1001' }), 1);
   assert.equal(f({ keyword: 'abc 1002' }), 0);
+});
+
+test('ブラックリストの入力チェック', () => {
+  assert.equal(validateBlacklistEntry({ gameId: '１２３４５６７８９', name: '', reason: '迷惑行為' }).ok, true);
+  assert.equal(validateBlacklistEntry({ gameId: '１２３４５６７８９', name: '', reason: '迷惑行為' }).values.gameId, '123456789');
+  assert.equal(validateBlacklistEntry({ gameId: '12345678', name: '', reason: 'x' }).ok, false);
+  assert.equal(validateBlacklistEntry({ gameId: '123456789', name: '', reason: '  ' }).ok, false);
+  assert.equal(validateBlacklistEntry({ gameId: '123456789', name: 'あ'.repeat(41), reason: 'x' }).ok, false);
+  assert.equal(validateBlacklistEntry({ gameId: '123456789', name: '', reason: 'あ'.repeat(101) }).ok, false);
 });

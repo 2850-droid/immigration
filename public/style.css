@@ -117,3 +117,10 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .filters input[type="search"] { grid-column: 1 / -1; }
 .filters .small { grid-column: 1 / -1; margin-top: 0; }
+
+.bl-banner { font-weight: 600; padding: 8px 10px; border: 1px solid var(--danger); border-radius: 8px; }
+.bl-flag { color: var(--danger); font-weight: 700; }
+.row.flagged > span:first-child { color: var(--danger); }
+label.check { display: flex; align-items: center; gap: 6px; font-weight: 400; grid-column: 1 / -1; }
+label.check input { width: auto; }
+button.tab { font-size: 0.8rem; line-height: 1.3; }
