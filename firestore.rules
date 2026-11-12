@@ -3,10 +3,16 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 管理者かどうか：admins コレクションに、ログイン中のアカウントIDの文書がある人
+    // 立場は3つ。オーナー（admins の role が owner）、移民管理者（同 manager）、登録者（ログイン不要）
+    // 移民管理者かオーナーか（移民情報をすべて見られる人）
     function isAdmin() {
       return request.auth != null
         && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    // オーナーか
+    function isOwner() {
+      return isAdmin()
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'owner';
     }
 
     // 入力形式（設計書 9.1）
@@ -50,15 +56,41 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
-    // 枠などの設定
+    // 枠などの設定。見るのは管理者全員、変更はオーナーだけ
     match /settings/{name} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if isOwner();
     }
 
-    // 管理者の名簿。本人が自分の文書を読めるだけ。追加はコンソールから手動
+    // 管理者の名簿。本人は自分の文書を読める。一覧・追加・削除はオーナーだけ
+    // 追加できるのは移民管理者（manager）だけで、オーナーを増やすことはコンソールからの手作業
     match /admins/{uid} {
-      allow get: if request.auth != null && request.auth.uid == uid;
-      allow list, write: if false;
+      allow get: if request.auth != null && (request.auth.uid == uid || isOwner());
+      allow list: if isOwner();
+      allow create: if isOwner()
+        && request.resource.data.role == 'manager'
+        && request.resource.data.keys().hasOnly(['role', 'displayName', 'createdAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 1
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.createdAt == request.time;
+      // 解任。オーナー自身の文書は消せない
+      allow delete: if isOwner() && request.auth.uid != uid;
+      allow update: if false;
+    }
+
+    // 移民管理者になりたい人の申請。本人が自分の分を出せて、オーナーが一覧・承認・却下する
+    match /admin_requests/{uid} {
+      allow get: if request.auth != null && (request.auth.uid == uid || isOwner());
+      allow list: if isOwner();
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['displayName', 'createdAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 1
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.createdAt == request.time;
+      allow delete: if request.auth != null && (request.auth.uid == uid || isOwner());
+      allow update: if false;
     }
   }
 }

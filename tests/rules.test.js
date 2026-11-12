@@ -15,6 +15,7 @@ import {
   collection,
   setDoc,
   updateDoc,
+  deleteDoc,
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
@@ -65,7 +66,9 @@ beforeEach(async () => {
     });
     await setDoc(doc(db, 'invite_notes', T.open), { recipientMemo: 'テスト', adminNote: '' });
     await setDoc(doc(db, 'settings', 'slots'), { normalPerMonth: 35 });
-    await setDoc(doc(db, 'admins', 'admin1'), { createdAt: Timestamp.now() });
+    await setDoc(doc(db, 'admins', 'admin1'), { role: 'owner', displayName: 'オーナー', createdAt: Timestamp.now() });
+    await setDoc(doc(db, 'admins', 'mgr1'), { role: 'manager', displayName: '管理者A', createdAt: Timestamp.now() });
+    await setDoc(doc(db, 'admin_requests', 'newbie'), { displayName: '申請者', createdAt: Timestamp.now() });
   });
 });
 
@@ -153,7 +156,6 @@ describe('登録者（未ログイン）', () => {
         expiresAt: Timestamp.fromMillis(Date.now() + DAY),
       }),
     );
-    const { deleteDoc } = await import('firebase/firestore');
     await assertFails(deleteDoc(doc(guest(), 'invites', T.open)));
   });
 });
@@ -193,10 +195,68 @@ describe('管理者', () => {
     await assertSucceeds(getDoc(doc(admin(), 'settings', 'slots')));
   });
 
-  it('11. admins は自分の文書しか読めず、書き換えもできない', async () => {
-    await assertSucceeds(getDoc(doc(admin(), 'admins', 'admin1')));
-    await assertFails(getDoc(doc(admin(), 'admins', 'other')));
-    await assertFails(getDocs(collection(admin(), 'admins')));
-    await assertFails(setDoc(doc(admin(), 'admins', 'someone'), { createdAt: serverTimestamp() }));
+  it('11. 管理者の名簿の追加は、承認の形（manager・決まった項目）に限られる', async () => {
+    const ref = (id) => doc(admin(), 'admins', id);
+    await assertSucceeds(getDoc(ref('admin1')));
+    await assertSucceeds(getDocs(collection(admin(), 'admins')));
+    await assertFails(setDoc(ref('x1'), { role: 'owner', displayName: 'x', createdAt: serverTimestamp() }));
+    await assertFails(setDoc(ref('x1'), { role: 'manager', displayName: 'x', createdAt: serverTimestamp(), extra: 1 }));
+    await assertFails(setDoc(ref('x1'), { role: 'manager', displayName: '', createdAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(ref('x1'), { role: 'manager', displayName: '新管理者', createdAt: serverTimestamp() }));
+  });
+
+  it('11b. オーナーは、移民管理者を解任できるが、自分は消せない。名簿の書き換えはできない', async () => {
+    await assertSucceeds(deleteDoc(doc(admin(), 'admins', 'mgr1')));
+    await assertFails(deleteDoc(doc(admin(), 'admins', 'admin1')));
+    await assertFails(updateDoc(doc(admin(), 'admins', 'mgr1'), { role: 'owner' }));
+  });
+
+  it('11c. オーナーは、申請の一覧を見て、却下できる。設定も変更できる', async () => {
+    await assertSucceeds(getDocs(collection(admin(), 'admin_requests')));
+    await assertSucceeds(deleteDoc(doc(admin(), 'admin_requests', 'newbie')));
+    await assertSucceeds(setDoc(doc(admin(), 'settings', 'slots'), { normalPerMonth: 36 }));
+  });
+});
+
+describe('移民管理者', () => {
+  const mgr = () => env.authenticatedContext('mgr1').firestore();
+
+  it('12. 招待の一覧・作成・確定・メモ・設定の閲覧ができる', async () => {
+    await assertSucceeds(getDocs(collection(mgr(), 'invites')));
+    await assertSucceeds(
+      setDoc(doc(mgr(), 'invites', 'MMMMMMMMMMMMMMMM'), {
+        scheduledMonth: '2026-12', status: '招待済み', inviteType: '未定',
+        expiresAt: Timestamp.fromMillis(Date.now() + 3 * DAY),
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      }),
+    );
+    await assertSucceeds(updateDoc(doc(mgr(), 'invites', T.registered), { status: '確定', inviteType: '普通', updatedAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(doc(mgr(), 'invite_notes', T.open), { recipientMemo: '更新', adminNote: '' }));
+    await assertSucceeds(getDoc(doc(mgr(), 'settings', 'slots')));
+  });
+
+  it('13. 枠の設定は変更できない。名簿・申請の一覧も見られず、管理者を増やせない', async () => {
+    await assertFails(setDoc(doc(mgr(), 'settings', 'slots'), { normalPerMonth: 99 }));
+    await assertFails(getDocs(collection(mgr(), 'admins')));
+    await assertFails(getDocs(collection(mgr(), 'admin_requests')));
+    await assertFails(setDoc(doc(mgr(), 'admins', 'x1'), { role: 'manager', displayName: 'x', createdAt: serverTimestamp() }));
+    await assertFails(deleteDoc(doc(mgr(), 'admins', 'admin1')));
+    await assertSucceeds(getDoc(doc(mgr(), 'admins', 'mgr1')));
+  });
+});
+
+describe('管理者の申請（ログイン済みだが、まだ権限のない人）', () => {
+  const user = () => env.authenticatedContext('user2').firestore();
+
+  it('14. 自分の申請だけ出せる。他人の名前では出せず、一覧も見られない', async () => {
+    await assertSucceeds(setDoc(doc(user(), 'admin_requests', 'user2'), { displayName: '希望者', createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(user(), 'admin_requests', 'someoneElse'), { displayName: '希望者', createdAt: serverTimestamp() }));
+    await assertFails(getDocs(collection(user(), 'admin_requests')));
+    await assertFails(getDocs(collection(user(), 'invites')));
+  });
+
+  it('15. 自分で自分を管理者にはできない', async () => {
+    await assertFails(setDoc(doc(user(), 'admins', 'user2'), { role: 'manager', displayName: '希望者', createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(user(), 'admins', 'user2'), { role: 'owner', displayName: '希望者', createdAt: serverTimestamp() }));
   });
 });
