@@ -574,7 +574,11 @@ async function roomWarning(data, targetMonth, type = data.inviteType, counted = 
   }
 }
 
-// 招待1件の詳細と操作：種別の決定、確定、取消、期限の延長、メモ
+// 招待1件の詳細と操作。ボタンは「保存」「確定」「取消」「戻る」の4つ
+//  保存：画面で変えた項目（種別・予定月・管理者メモ）を保存する。状態は変えない
+//  確定：保存してから、確定にする
+//  取消：移民の取りやめ。理由が必要
+//  戻る：入力を捨てて、詳細を閉じる
 async function renderInviteDetail(box, token, data, state, uid, reload) {
   box.style.flex = '1 1 100%';
   const message = h('p', { class: 'error' });
@@ -582,30 +586,32 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
   const memoInput = h('input', { type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX), 'aria-label': '管理者メモ' });
   let sendNote = '';
   let cancelReason = '';
+  let originalMemo = '';
   try {
     const n = await getDoc(doc(db, 'invite_notes', token));
     if (n.exists()) {
       sendNote = n.data().sendNote ?? '';
       cancelReason = n.data().cancelReason ?? '';
-      memoInput.value = n.data().adminMemo ?? '';
+      originalMemo = n.data().adminMemo ?? '';
+      memoInput.value = originalMemo;
     }
   } catch {
     message.textContent = 'メモを読み込めませんでした。';
   }
 
-  async function run(button, fn) {
-    button.disabled = true;
+  async function run(buttons, fn) {
+    buttons.forEach((b) => (b.disabled = true));
     message.textContent = '';
     try {
       await fn();
       await reload();
     } catch (err) {
       // 確認ダイアログでやめた場合は、エラー表示を出さない
-      message.textContent = err && err.message === 'cancelled' ? '' : '操作できませんでした。時間をおいて、もう一度お試しください。';
-      button.disabled = false;
+      message.textContent = err && err.message === 'cancelled' ? '' : err && err.userMessage ? err.userMessage : '操作できませんでした。時間をおいて、もう一度お試しください。';
+      buttons.forEach((b) => (b.disabled = false));
     }
   }
-  const update = (fields) => updateDoc(doc(db, 'invites', token), { ...fields, updatedAt: serverTimestamp() });
+  const stop = (text) => Object.assign(new Error('invalid'), { userMessage: text });
   const btn = (label, cls, onClick) => {
     const b = h('button', { type: 'button', class: cls }, label);
     b.addEventListener('click', () => onClick(b));
@@ -623,137 +629,151 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
   ];
   if (state === '取消') children.push(dl('取消の理由', cancelReason));
 
+  // 招待済み・失効：URLの表示と、期限の延長
   if (state === '招待済み' || state === '失効') {
     if (state === '招待済み') children.push(urlBox(token));
-    children.push(
-      btn('期限を延ばす', 'secondary', (b) => {
-        if (!confirm('今から有効期限を延ばし直しますか？')) return;
-        run(b, async () => {
-          let days = 3;
-          try {
-            const snap = await getDoc(doc(db, 'settings', 'slots'));
-            const v = snap.exists() ? snap.data().inviteExpiryDays : null;
-            if (Number.isInteger(v) && v >= 1 && v <= 30) days = v;
-          } catch {
-            // 既定の3日
-          }
-          await update({ expiresAt: Timestamp.fromMillis(Date.now() + days * DAY_MS) });
-        });
-      }),
-    );
+    const extend = btn('期限を延ばす', 'secondary', (b) => {
+      if (!confirm('今から有効期限を延ばし直しますか？')) return;
+      run([b], async () => {
+        let days = 3;
+        try {
+          const snap = await getDoc(doc(db, 'settings', 'slots'));
+          const v = snap.exists() ? snap.data().inviteExpiryDays : null;
+          if (Number.isInteger(v) && v >= 1 && v <= 30) days = v;
+        } catch {
+          // 既定の3日
+        }
+        await updateDoc(doc(db, 'invites', token), { expiresAt: Timestamp.fromMillis(Date.now() + days * DAY_MS), updatedAt: serverTimestamp() });
+      });
+    });
+    children.push(extend);
   }
 
+  // 予定月（取消・失効以外）。枠が満員でも、管理者の判断で変更できる（警告は出す）
+  let monthSelect = null;
   if (state === '招待済み' || state === '登録済み' || state === '確定') {
-    // 予定月の変更。枠が満員でも、管理者の判断で変更できる（警告は出す）
     const now = new Date();
     const options = monthOptions(new Date(now.getFullYear(), now.getMonth() - 1, 1), 14);
     if (!options.includes(data.scheduledMonth)) options.unshift(data.scheduledMonth);
-    const monthSelect = h('select', { 'aria-label': '移民予定月' }, ...options.map((m) => h('option', { value: m }, formatMonth(m) ?? m)));
+    monthSelect = h('select', { id: `m-${token}`, 'aria-label': '移民予定月' }, ...options.map((m) => h('option', { value: m }, formatMonth(m) ?? m)));
     monthSelect.value = data.scheduledMonth;
-    children.push(
-      h('div', { class: 'field' }, h('label', {}, '移民予定月を変更 ', h('span', { class: 'hint' }, '登録者の画面の表示も変わります')), monthSelect),
-      btn('予定月を変更する', 'secondary', (b) => {
-        const target = monthSelect.value;
-        if (target === data.scheduledMonth) {
-          message.textContent = '今の予定月と同じです。';
-          return;
-        }
-        run(b, async () => {
-          const warning = await roomWarning(data, target);
-          const text = `予定月を${formatMonth(data.scheduledMonth) ?? data.scheduledMonth}から${formatMonth(target)}に変更しますか？${warning ? `\n\n注意：${warning}` : ''}`;
-          if (!confirm(text)) throw new Error('cancelled');
-          const batch = writeBatch(db);
-          batch.update(doc(db, 'invites', token), { scheduledMonth: target, updatedAt: serverTimestamp() });
-          // 月が変わると作業をやり直すので、コピー済みの印は外す
-          batch.set(doc(db, 'invite_notes', token), { copiedAt: deleteField(), copiedBy: deleteField() }, { merge: true });
-          await batch.commit();
-        });
-      }),
-    );
+    children.push(h('div', { class: 'field' }, h('label', { for: `m-${token}` }, '移民予定月 ', h('span', { class: 'hint' }, '変えると登録者の画面の表示も変わります')), monthSelect));
   }
 
+  // 種別（登録済み・確定）
+  let typeSelect = null;
   if (state === '登録済み' || state === '確定') {
-    const type = h('select', { 'aria-label': '招待の種別' }, ...['未定', '普通', '特別'].map((t) => h('option', { value: t }, t)));
-    type.value = data.inviteType ?? '未定';
-    children.push(
-      h('div', { class: 'field' }, h('label', {}, '種別 ', h('span', { class: 'hint' }, 'ゲーム内でIDを照会して決めます')), type),
-      btn('種別を保存', 'secondary', (b) =>
-        run(b, async () => {
-          // 普通・特別に決めるときは、その月の枠が足りているか確かめる（足りなくても、確認のうえ保存できる）
-          if (type.value !== '未定' && type.value !== (data.inviteType ?? '未定')) {
-            const warning = await roomWarning(data, data.scheduledMonth, type.value);
-            if (warning && !confirm(`注意：${warning}\n\nそれでも種別を「${type.value}」にしますか？`)) throw new Error('cancelled');
-          }
-          await update({ inviteType: type.value });
-        }),
-      ),
-    );
-    if (state === '登録済み') {
-      children.push(
-        btn('確定する', '', (b) => {
-          const unknown = (data.inviteType ?? '未定') === '未定';
-          run(b, async () => {
-            // すでに数えられている種別が、枠を超えていないかも確かめる
-            const over = unknown ? '' : await roomWarning(data, data.scheduledMonth, data.inviteType, true);
-            const text = unknown ? '種別がまだ「未定」です。このまま確定しますか？' : `${over ? `注意：${over}\n\n` : ''}確定しますか？`;
-            if (!confirm(text)) throw new Error('cancelled');
-            await update({ status: '確定', confirmedAt: serverTimestamp() });
-          });
-        }),
-      );
-    }
+    typeSelect = h('select', { id: `t-${token}`, 'aria-label': '招待の種別' }, ...['未定', '普通', '特別'].map((t) => h('option', { value: t }, t)));
+    typeSelect.value = data.inviteType ?? '未定';
+    children.push(h('div', { class: 'field' }, h('label', { for: `t-${token}` }, '種別 ', h('span', { class: 'hint' }, 'ゲーム内でIDを照会して決めます')), typeSelect));
   }
 
-  if (state !== '取消') {
-    // 取消には理由が必要。理由は管理者だけが読める invite_notes に入れる（招待の文書は登録者にも読めるため）
-    const reasonInput = h('input', { type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX), 'aria-label': '取消の理由' });
-    const reasonError = h('p', { class: 'error' });
-    const reasonBox = h(
-      'div',
-      { class: 'field' },
-      h('label', {}, '取消の理由 ', h('span', { class: 'hint' }, `必須。${NOTE_MAX}文字まで。管理者だけが見られます`)),
-      reasonInput,
-      reasonError,
-    );
-    reasonBox.hidden = true;
-    const doCancel = btn('取消を実行する', '', (b) => {
-      const r = validateNote(reasonInput.value);
-      if (r.ok && !r.value) {
-        reasonError.textContent = '理由を入力してください';
-        return;
-      }
-      reasonError.textContent = r.error;
-      if (!r.ok) return;
-      if (!confirm('この招待を取り消しますか？')) return;
-      run(b, () => {
-        const batch = writeBatch(db);
-        batch.update(doc(db, 'invites', token), { status: '取消', cancelledAt: serverTimestamp(), updatedAt: serverTimestamp() });
-        batch.set(doc(db, 'invite_notes', token), { cancelReason: r.value, cancelledBy: uid }, { merge: true });
-        return batch.commit();
-      });
-    });
-    doCancel.hidden = true;
-    const openCancel = btn('取り消す', 'secondary', () => {
-      reasonBox.hidden = false;
-      doCancel.hidden = false;
-      openCancel.hidden = true;
-      reasonInput.focus();
-    });
-    children.push(openCancel, reasonBox, doCancel);
-  }
+  children.push(h('div', { class: 'field' }, h('label', {}, '管理者メモ'), memoInput));
 
-  children.push(
-    h('div', { class: 'field' }, h('label', {}, '管理者メモ'), memoInput),
-    btn('メモを保存', 'secondary', (b) => {
-      const n = validateNote(memoInput.value);
-      if (!n.ok) {
-        message.textContent = n.error;
-        return;
-      }
-      run(b, () => setDoc(doc(db, 'invite_notes', token), { adminMemo: n.value, updatedBy: uid }, { merge: true }));
-    }),
-    message,
+  // 取消の理由欄。「取消」を押すと現れる
+  const reasonInput = h('input', { type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX), 'aria-label': '取消の理由' });
+  const reasonBox = h(
+    'div',
+    { class: 'field' },
+    h('label', {}, '取消の理由 ', h('span', { class: 'hint' }, `必須。${NOTE_MAX}文字まで。管理者だけが見られます`)),
+    reasonInput,
   );
+  reasonBox.hidden = true;
+  children.push(reasonBox, message);
+
+  // 画面で変えた内容を集めて、書き込みの準備をする。確認ダイアログで止める場合は例外を投げる
+  async function collect(confirming) {
+    const memo = validateNote(memoInput.value);
+    if (!memo.ok) throw stop(memo.error);
+    const newType = typeSelect ? typeSelect.value : data.inviteType;
+    const newMonth = monthSelect ? monthSelect.value : data.scheduledMonth;
+    const typeChanged = !!typeSelect && newType !== (data.inviteType ?? '未定');
+    const monthChanged = newMonth !== data.scheduledMonth;
+    const memoChanged = memo.value !== originalMemo;
+
+    // 枠の確認（足りなくても、確認のうえ進める）
+    const notes = [];
+    if ((typeChanged && newType !== '未定') || monthChanged) {
+      const w = await roomWarning(data, newMonth, newType);
+      if (w) notes.push(w);
+    } else if (confirming && state === '登録済み' && (newType === '普通' || newType === '特別')) {
+      const w = await roomWarning(data, newMonth, newType, true); // すでに数えられている分が超過していないか
+      if (w) notes.push(w);
+    }
+    if (confirming && (newType ?? '未定') === '未定') notes.push('種別がまだ「未定」です。');
+    const lines = [];
+    if (monthChanged) lines.push(`予定月を${formatMonth(data.scheduledMonth) ?? data.scheduledMonth}から${formatMonth(newMonth)}に変更します。`);
+    if (typeChanged) lines.push(`種別を「${newType}」にします。`);
+    if (confirming) lines.push('確定します。');
+    const text = [...lines, ...notes.map((n) => `注意：${n}`)].join('\n');
+    // 変更も警告もない保存は、確認なしで進める。確定、予定月の変更、警告があるときは確認する
+    if (text && (confirming || monthChanged || notes.length) && !confirm(`${text}\n\nよろしいですか？`)) throw new Error('cancelled');
+    return { memo, newType, newMonth, typeChanged, monthChanged, memoChanged };
+  }
+
+  async function write(c, confirming) {
+    const batch = writeBatch(db);
+    const fields = { updatedAt: serverTimestamp() };
+    if (c.typeChanged) fields.inviteType = c.newType;
+    if (c.monthChanged) fields.scheduledMonth = c.newMonth;
+    if (confirming) Object.assign(fields, { status: '確定', confirmedAt: serverTimestamp() });
+    batch.update(doc(db, 'invites', token), fields);
+    const noteFields = {};
+    if (c.memoChanged) Object.assign(noteFields, { adminMemo: c.memo.value, updatedBy: uid });
+    // 月が変わると作業をやり直すので、コピー済みの印は外す
+    if (c.monthChanged) Object.assign(noteFields, { copiedAt: deleteField(), copiedBy: deleteField() });
+    if (Object.keys(noteFields).length) batch.set(doc(db, 'invite_notes', token), noteFields, { merge: true });
+    await batch.commit();
+  }
+
+  const buttons = [];
+  const saveBtn = btn('保存', 'secondary', (b) =>
+    run(buttons, async () => {
+      const c = await collect(false);
+      if (!c.typeChanged && !c.monthChanged && !c.memoChanged) throw stop('変更はありません。');
+      await write(c, false);
+    }),
+  );
+  const confirmBtn = btn('確定', '', (b) =>
+    run(buttons, async () => {
+      const c = await collect(true);
+      await write(c, true);
+    }),
+  );
+  const cancelBtn = btn('取消', 'secondary danger', () => {
+    // 1回目：理由の入力欄を出す。2回目：理由が入っていれば取り消す
+    if (reasonBox.hidden) {
+      reasonBox.hidden = false;
+      reasonInput.focus();
+      message.textContent = '取消の理由を入力して、もう一度「取消」を押してください。';
+      return;
+    }
+    const r = validateNote(reasonInput.value);
+    if (!r.ok) {
+      message.textContent = r.error;
+      return;
+    }
+    if (!r.value) {
+      message.textContent = '取消の理由を入力してください。';
+      return;
+    }
+    if (!confirm('この招待を取り消しますか？')) return;
+    run(buttons, () => {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'invites', token), { status: '取消', cancelledAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      batch.set(doc(db, 'invite_notes', token), { cancelReason: r.value, cancelledBy: uid }, { merge: true });
+      return batch.commit();
+    });
+  });
+  const backBtn = btn('戻る', 'secondary', () => box.replaceChildren());
+
+  // 状態によって使えるものだけを並べる：保存は常に、確定は登録済みだけ、取消は取消済み以外
+  const actions = [saveBtn];
+  if (state === '登録済み') actions.push(confirmBtn);
+  if (state !== '取消') actions.push(cancelBtn);
+  actions.push(backBtn);
+  buttons.push(...actions);
+  children.push(h('div', { class: 'actions' }, ...actions));
   box.replaceChildren(...children);
 }
 
