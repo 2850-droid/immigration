@@ -29,7 +29,7 @@ import { firebaseConfig } from './firebase-config.js';
 import {
   adminIdToEmail, validateAdminLogin, validateAdminSignup, ADMIN_NAME_MAX,
   generateToken, monthOptions, validateNote, formatMonth, judgeState, NOTE_MAX,
-  computeSlots, validateSettings, DEFAULT_SETTINGS,
+  computeSlots, validateSettings, DEFAULT_SETTINGS, filterInvites,
 } from './logic.js';
 
 const app = initializeApp(firebaseConfig);
@@ -313,28 +313,74 @@ async function renderInvitePanel(holder, uid) {
     button.disabled = false;
   });
 
-  const list = h('div');
+  // 一覧と絞り込み。絞り込みの条件は作り直さず、読み直しても保たれる
+  const FETCH_LIMIT = 300;
+  let all = [];
+  let truncated = false;
+  let loadError = false;
+
+  const sel = (id, label, options) => {
+    const el = h('select', { id, 'aria-label': label }, ...options.map(([v, t]) => h('option', { value: v }, t)));
+    return el;
+  };
+  const stateSel = sel('f-state', '状態', [['', '状態：すべて'], ...['招待済み', '登録済み', '確定', '取消', '失効'].map((v) => [v, v])]);
+  const nowD = new Date();
+  const monthSel = sel('f-month', '予定月', [['', '予定月：すべて'], ...monthOptions(new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1), 14).map((m) => [m, formatMonth(m)])]);
+  const typeSel = sel('f-type', '種別', [['', '種別：すべて'], ['未定', '未定'], ['普通', '普通'], ['特別', '特別']]);
+  const keyword = h('input', { id: 'f-keyword', type: 'search', placeholder: '名前・ID・国番号・同盟・メモ', autocomplete: 'off', 'aria-label': 'キーワード' });
+  const clear = h('button', { type: 'button', class: 'secondary small' }, '条件をクリア');
+  const count = h('p', { class: 'muted' });
+  const listBody = h('div');
+  const filterBox = h('div', { class: 'filters' }, keyword, stateSel, monthSel, typeSel, clear);
+
+  function render() {
+    if (loadError) {
+      listBody.replaceChildren(h('p', {}, '読み込めませんでした。'));
+      count.textContent = '';
+      return;
+    }
+    const cond = { state: stateSel.value, month: monthSel.value, type: typeSel.value, keyword: keyword.value };
+    const shown = filterInvites(all, cond, Date.now());
+    const filtered = Object.values(cond).some(Boolean);
+    count.textContent = `${filtered ? `${shown.length}件（全${all.length}件）` : `${all.length}件`}${truncated ? `　※新しい${FETCH_LIMIT}件までを表示しています` : ''}`;
+    const rows = shown.map(({ token, data }) => {
+      const state = judgeState(data, Date.now());
+      const summary = [formatMonth(data.scheduledMonth) ?? '', data.name ?? '', state, data.inviteType ?? ''].filter(Boolean).join('　');
+      const detail = h('div');
+      const toggle = h('button', { type: 'button', class: 'secondary' }, '詳細');
+      toggle.addEventListener('click', () => {
+        if (detail.childNodes.length) detail.replaceChildren();
+        else renderInviteDetail(detail, token, data, state, uid, loadList);
+      });
+      return h('li', { class: 'row' }, h('span', {}, summary), toggle, detail);
+    });
+    listBody.replaceChildren(rows.length ? h('ul', { class: 'list' }, ...rows) : h('p', { class: 'muted' }, all.length ? '条件に合う招待はありません。' : 'まだ招待はありません。'));
+  }
+  for (const el of [stateSel, monthSel, typeSel]) el.addEventListener('change', render);
+  keyword.addEventListener('input', render);
+  clear.addEventListener('click', () => {
+    stateSel.value = monthSel.value = typeSel.value = keyword.value = '';
+    render();
+  });
+
+  const list = card('招待の一覧', filterBox, count, listBody);
   async function loadList() {
     refreshSlots();
     refreshWork();
     try {
-      const snap = await getDocs(query(collection(db, 'invites'), orderBy('createdAt', 'desc'), limit(20)));
-      const rows = snap.docs.map((d) => {
-        const data = d.data();
-        const state = judgeState(data, Date.now());
-        const summary = [formatMonth(data.scheduledMonth) ?? '', data.name ?? '', state, data.inviteType ?? ''].filter(Boolean).join('　');
-        const detail = h('div');
-        const toggle = h('button', { type: 'button', class: 'secondary' }, '詳細');
-        toggle.addEventListener('click', () => {
-          if (detail.childNodes.length) detail.replaceChildren();
-          else renderInviteDetail(detail, d.id, data, state, uid, loadList);
-        });
-        return h('li', { class: 'row' }, h('span', {}, summary), toggle, detail);
-      });
-      list.replaceChildren(card('最近の招待', rows.length ? h('ul', { class: 'list' }, ...rows) : 'まだ招待はありません。'));
+      // 招待と、管理者だけが読めるメモ（送付先メモ・管理者メモ）をあわせて読み、キーワードで探せるようにする
+      const [snap, notes] = await Promise.all([
+        getDocs(query(collection(db, 'invites'), orderBy('createdAt', 'desc'), limit(FETCH_LIMIT))),
+        getDocs(collection(db, 'invite_notes')).catch(() => null),
+      ]);
+      const noteMap = new Map(notes ? notes.docs.map((d) => [d.id, d.data()]) : []);
+      all = snap.docs.map((d) => ({ token: d.id, data: d.data(), note: noteMap.get(d.id) }));
+      truncated = snap.size >= FETCH_LIMIT;
+      loadError = false;
     } catch {
-      list.replaceChildren(card('最近の招待', '読み込めませんでした。'));
+      loadError = true;
     }
+    render();
   }
 
   holder.replaceChildren(card('招待を作る', form), result, list);

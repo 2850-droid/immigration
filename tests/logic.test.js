@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseToken, validateRegistration, judgeState, formatMonth,
   adminIdToEmail, validateAdminLogin, validateAdminSignup,
-  generateToken, monthOptions, validateNote, nextMonth, validateSettings, computeSlots,
+  generateToken, monthOptions, validateNote, nextMonth, validateSettings, computeSlots, filterInvites,
 } from '../public/logic.js';
 
 test('トークン：正しい形式、小文字・ハイフン・空白は許す', () => {
@@ -152,4 +152,29 @@ test('枠の計算：普通・特別の繰り越し・取消で戻る・未定',
   assert.equal(dec.undecided, 2);
   assert.equal(jan.special.total, 3); // min(3, 2+1)
   assert.equal(computeSlots([], settings, ['2026-10'], NOW)[0].special, null); // 基準月より前
+});
+
+test('招待の絞り込み：状態・月・種別・キーワード', () => {
+  const NOW = Date.UTC(2026, 10, 12);
+  const future = { toMillis: () => NOW + 86400000 };
+  const past = { toMillis: () => NOW - 86400000 };
+  const mk = (data, note) => ({ data: { expiresAt: future, inviteType: '未定', scheduledMonth: '2026-12', ...data }, note });
+  const items = [
+    mk({ status: '登録済み', name: 'ヤマダ', gameId: '111111111', countryNo: '1001', alliance: 'ABC' }),
+    mk({ status: '確定', inviteType: '特別', name: 'Suzuki', gameId: '222222222', countryNo: '1002', alliance: '', scheduledMonth: '2027-01' }, { sendNote: 'Aさん経由' }),
+    mk({ status: '招待済み', expiresAt: past }), // 失効
+    mk({ status: '取消', name: 'キャンセル', gameId: '333333333', countryNo: '1003' }),
+  ];
+  const f = (cond) => filterInvites(items, { state: '', month: '', type: '', keyword: '', ...cond }, NOW).length;
+  assert.equal(f({}), 4);
+  assert.equal(f({ state: '登録済み' }), 1);
+  assert.equal(f({ state: '失効' }), 1);
+  assert.equal(f({ month: '2027-01' }), 1);
+  assert.equal(f({ type: '特別' }), 1);
+  assert.equal(f({ type: '未定' }), 3);
+  assert.equal(f({ keyword: 'suzuki' }), 1);
+  assert.equal(f({ keyword: '１１１１' }), 1); // 全角でも検索できる
+  assert.equal(f({ keyword: 'a さん' }), 1); // 送付先メモ、空白区切りはすべてを含むもの
+  assert.equal(f({ keyword: 'abc 1001' }), 1);
+  assert.equal(f({ keyword: 'abc 1002' }), 0);
 });

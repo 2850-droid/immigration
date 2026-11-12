@@ -230,3 +230,23 @@ export function computeSlots(invites, settings, months, nowMs) {
     };
   });
 }
+
+// ---- 招待の絞り込み ----
+
+// items：{ data（招待の文書）, note（invite_notes の文書。なければ空）} の配列。
+// cond：{ state, month, type, keyword }。空文字は「指定なし」
+// キーワードは、名前・ID・国番号・同盟・送付先メモ・管理者メモのどれかに含まれていればよい（全角半角・大文字小文字の違いは無視）
+export function filterInvites(items, cond, nowMs) {
+  const norm = (v) => String(v ?? '').normalize('NFKC').toLowerCase();
+  const words = norm(cond.keyword).split(/\s+/).filter(Boolean);
+  return items.filter(({ data, note }) => {
+    if (cond.state && judgeState(data, nowMs) !== cond.state) return false;
+    if (cond.month && data.scheduledMonth !== cond.month) return false;
+    if (cond.type && (data.inviteType ?? '未定') !== cond.type) return false;
+    if (words.length) {
+      const text = [data.name, data.gameId, data.countryNo, data.alliance, note?.sendNote, note?.adminMemo].map(norm).join('\n');
+      if (!words.every((w) => text.includes(w))) return false;
+    }
+    return true;
+  });
+}

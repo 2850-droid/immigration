@@ -113,3 +113,7 @@ button.tab.active { color: #fff; background: var(--accent); border-color: var(--
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
 .actions button { margin: 0; }
 button.danger { color: var(--danger); border-color: var(--danger); }
+
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.filters input[type="search"] { grid-column: 1 / -1; }
+.filters .small { grid-column: 1 / -1; margin-top: 0; }
