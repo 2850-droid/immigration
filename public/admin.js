@@ -398,16 +398,18 @@ async function renderWorkPanel(holder, uid) {
     const message = h('p', { class: 'error' });
 
     const items = rows.map((r) => {
-      const sep = () => h('span', { class: 'sep' }, '｜');
-      const label = h(
-        'span',
-        { class: 'work-name' },
-        r.data.name ?? '',
-        sep(),
-        h('span', { class: 'work-country' }, r.data.countryNo ?? ''),
-        sep(),
+      // 種別｜国番号｜名前｜同盟（同盟は未入力なら出さない）
+      const parts = [
         h('span', { class: 'badge' }, r.data.inviteType ?? '未定'),
-      );
+        h('span', { class: 'work-country' }, r.data.countryNo ?? ''),
+        h('span', {}, r.data.name ?? ''),
+      ];
+      if (r.data.alliance) parts.push(h('span', { class: 'work-alliance' }, r.data.alliance));
+      const label = h('span', { class: 'work-name' });
+      parts.forEach((part, i) => {
+        if (i > 0) label.append(h('span', { class: 'sep' }, '｜'));
+        label.append(part);
+      });
       const idText = h('span', { class: 'work-id' }, r.data.gameId ?? '');
       const copyBtn = h('button', { type: 'button' }, 'IDをコピー');
       const undoBtn = h('button', { type: 'button', class: 'secondary small' }, '未コピーに戻す');
