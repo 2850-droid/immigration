@@ -13,6 +13,9 @@ import {
   doc,
   getDoc,
   setDoc,
+  getDocs,
+  collection,
+  writeBatch,
   serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
@@ -171,15 +174,89 @@ function logoutButton() {
 }
 
 // 承認済みの管理者の画面。招待・一覧などは、このあと順に作る
-function showDashboard(admin) {
+function showDashboard(uid, admin) {
   const roleLabel = admin.role === 'owner' ? 'オーナー' : '移民管理者';
-  show(card('移民管理', `${admin.displayName ?? ''}さん（${roleLabel}）としてログイン中です。`, 'この画面は準備中です。'), logoutButton());
+  const nodes = [card('移民管理', `${admin.displayName ?? ''}さん（${roleLabel}）としてログイン中です。`)];
+  if (admin.role === 'owner') {
+    const holder = h('div');
+    nodes.push(holder);
+    renderOwnerPanel(holder, uid);
+  }
+  nodes.push(logoutButton());
+  show(...nodes);
+}
+
+// オーナー用：承認待ちの申請と、移民管理者の名簿
+async function renderOwnerPanel(holder, ownUid) {
+  const message = h('p', { class: 'error' });
+  const reload = () => renderOwnerPanel(holder, ownUid);
+
+  async function act(button, fn) {
+    button.disabled = true;
+    message.textContent = '';
+    try {
+      await fn();
+      await reload();
+    } catch {
+      message.textContent = '操作できませんでした。時間をおいて、もう一度お試しください。';
+      button.disabled = false;
+    }
+  }
+
+  let requests;
+  let admins;
+  try {
+    [requests, admins] = await Promise.all([getDocs(collection(db, 'admin_requests')), getDocs(collection(db, 'admins'))]);
+  } catch {
+    holder.replaceChildren(card('管理者の管理', '読み込めませんでした。時間をおいて、もう一度お試しください。'));
+    return;
+  }
+
+  const requestRows = requests.docs.map((d) => {
+    const data = d.data();
+    const approve = h('button', { type: 'button' }, '承認');
+    approve.addEventListener('click', () => {
+      if (!confirm(`「${data.displayName}」さんを移民管理者として承認しますか？`)) return;
+      act(approve, () => {
+        const batch = writeBatch(db);
+        batch.set(doc(db, 'admins', d.id), { role: 'manager', displayName: data.displayName, createdAt: serverTimestamp() });
+        batch.delete(doc(db, 'admin_requests', d.id));
+        return batch.commit();
+      });
+    });
+    const reject = h('button', { type: 'button', class: 'secondary' }, '却下');
+    reject.addEventListener('click', () => {
+      if (!confirm(`「${data.displayName}」さんの申請を却下しますか？`)) return;
+      act(reject, () => writeBatch(db).delete(doc(db, 'admin_requests', d.id)).commit());
+    });
+    return h('li', { class: 'row' }, h('span', {}, data.displayName ?? '（名前なし）'), approve, reject);
+  });
+
+  const adminRows = admins.docs.map((d) => {
+    const data = d.data();
+    const row = h('li', { class: 'row' }, h('span', {}, `${data.displayName ?? ''}（${data.role === 'owner' ? 'オーナー' : '移民管理者'}）`));
+    if (d.id !== ownUid && data.role !== 'owner') {
+      const revoke = h('button', { type: 'button', class: 'secondary' }, '解任');
+      revoke.addEventListener('click', () => {
+        if (!confirm(`「${data.displayName}」さんを解任しますか？`)) return;
+        act(revoke, () => writeBatch(db).delete(doc(db, 'admins', d.id)).commit());
+      });
+      row.append(revoke);
+    }
+    return row;
+  });
+
+  holder.replaceChildren(
+    card('承認待ちの申請', requestRows.length ? h('ul', { class: 'list' }, ...requestRows) : '承認待ちの申請はありません。'),
+    card('管理者の名簿', h('ul', { class: 'list' }, ...adminRows)),
+    message,
+  );
 }
 
 async function route(user) {
   try {
     const adminSnap = await getDoc(doc(db, 'admins', user.uid));
-    if (adminSnap.exists()) return showDashboard(adminSnap.data());
+    if (adminSnap.exists()) return showDashboard(user.uid, adminSnap.data());
     const reqSnap = await getDoc(doc(db, 'admin_requests', user.uid));
     if (reqSnap.exists()) {
       return show(card('承認待ち', '申請を受け付けました。オーナーの承認をお待ちください。'), logoutButton());
