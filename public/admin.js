@@ -307,10 +307,12 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
   const dl = (label, value) => h('p', { class: 'muted' }, `${label}：${value || '（なし）'}`);
   const memoInput = h('input', { type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX), 'aria-label': '管理者メモ' });
   let sendNote = '';
+  let cancelReason = '';
   try {
     const n = await getDoc(doc(db, 'invite_notes', token));
     if (n.exists()) {
       sendNote = n.data().sendNote ?? '';
+      cancelReason = n.data().cancelReason ?? '';
       memoInput.value = n.data().adminMemo ?? '';
     }
   } catch {
@@ -344,6 +346,7 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
     dl('同盟', data.alliance),
     dl('送付先メモ', sendNote),
   ];
+  if (state === '取消') children.push(dl('取消の理由', cancelReason));
 
   if (state === '招待済み' || state === '失効') {
     if (state === '招待済み') children.push(urlBox(token));
@@ -384,12 +387,41 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
   }
 
   if (state !== '取消') {
-    children.push(
-      btn('取り消す', 'secondary', (b) => {
-        if (!confirm('この招待を取り消しますか？')) return;
-        run(b, () => update({ status: '取消', cancelledAt: serverTimestamp() }));
-      }),
+    // 取消には理由が必要。理由は管理者だけが読める invite_notes に入れる（招待の文書は登録者にも読めるため）
+    const reasonInput = h('input', { type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX), 'aria-label': '取消の理由' });
+    const reasonError = h('p', { class: 'error' });
+    const reasonBox = h(
+      'div',
+      { class: 'field' },
+      h('label', {}, '取消の理由 ', h('span', { class: 'hint' }, `必須。${NOTE_MAX}文字まで。管理者だけが見られます`)),
+      reasonInput,
+      reasonError,
     );
+    reasonBox.hidden = true;
+    const doCancel = btn('取消を実行する', '', (b) => {
+      const r = validateNote(reasonInput.value);
+      if (r.ok && !r.value) {
+        reasonError.textContent = '理由を入力してください';
+        return;
+      }
+      reasonError.textContent = r.error;
+      if (!r.ok) return;
+      if (!confirm('この招待を取り消しますか？')) return;
+      run(b, () => {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'invites', token), { status: '取消', cancelledAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        batch.set(doc(db, 'invite_notes', token), { cancelReason: r.value, cancelledBy: uid }, { merge: true });
+        return batch.commit();
+      });
+    });
+    doCancel.hidden = true;
+    const openCancel = btn('取り消す', 'secondary', () => {
+      reasonBox.hidden = false;
+      doCancel.hidden = false;
+      openCancel.hidden = true;
+      reasonInput.focus();
+    });
+    children.push(openCancel, reasonBox, doCancel);
   }
 
   children.push(
