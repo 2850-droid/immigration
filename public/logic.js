@@ -80,3 +80,42 @@ export function formatMonth(value) {
   const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(value ?? ''));
   return m ? `${m[1]}年${Number(m[2])}月` : null;
 }
+
+// ---- 管理画面 ----
+
+export const ADMIN_NAME_MAX = 20;
+
+// 管理者IDは、画面の裏で「ID@admin.invalid」というメール形式に変換して Firebase Auth に渡す（実際のメールは使わない）
+export function adminIdToEmail(id) {
+  return `${String(id ?? '').normalize('NFKC').trim().toLowerCase()}@admin.invalid`;
+}
+
+// 管理者ログイン／申請の入力チェック。IDは半角英小文字・数字・_ で3〜20文字、パスワードは8〜64文字
+export function validateAdminLogin({ adminId, password }) {
+  const id = String(adminId ?? '').normalize('NFKC').trim().toLowerCase();
+  const pw = String(password ?? '');
+  const errors = {};
+  if (!/^[a-z0-9_]{3,20}$/.test(id)) {
+    errors.adminId = '管理者IDは、半角の英小文字・数字・_ で3〜20文字にしてください';
+  }
+  if (pw.length < 8 || pw.length > 64) {
+    errors.password = 'パスワードは8〜64文字にしてください';
+  }
+  return { ok: Object.keys(errors).length === 0, errors, values: { adminId: id, password: pw } };
+}
+
+// 申請時の追加項目：表示名
+export function validateAdminSignup({ adminId, password, passwordConfirm, displayName }) {
+  const result = validateAdminLogin({ adminId, password });
+  const displayNameValue = String(displayName ?? '').trim();
+  const len = [...displayNameValue].length;
+  if (len < 1) result.errors.displayName = '表示名を入力してください';
+  else if (len > ADMIN_NAME_MAX) result.errors.displayName = `表示名は${ADMIN_NAME_MAX}文字までにしてください`;
+  else if (/[\u0000-\u001f\u007f]/.test(displayNameValue)) result.errors.displayName = '表示名に使えない文字が含まれています';
+  if (!result.errors.password && password !== passwordConfirm) {
+    result.errors.passwordConfirm = 'パスワードが一致しません';
+  }
+  result.ok = Object.keys(result.errors).length === 0;
+  result.values.displayName = displayNameValue;
+  return result;
+}

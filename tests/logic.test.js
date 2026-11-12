@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseToken, validateRegistration, judgeState, formatMonth } from '../public/logic.js';
+import {
+  parseToken, validateRegistration, judgeState, formatMonth,
+  adminIdToEmail, validateAdminLogin, validateAdminSignup,
+} from '../public/logic.js';
 
 test('トークン：正しい形式、小文字・ハイフン・空白は許す', () => {
   assert.equal(parseToken('#ABCDEFGHJKLMNPQR'), 'ABCDEFGHJKLMNPQR');
@@ -72,4 +75,23 @@ test('名前：20文字まで（絵文字も1文字）、空・長すぎ・制�
   assert.equal(validateRegistration({ ...base, name: 'あ'.repeat(21) }).ok, false);
   assert.equal(validateRegistration({ ...base, name: '   ' }).ok, false);
   assert.equal(validateRegistration({ ...base, name: 'a\nb' }).ok, false);
+});
+
+test('管理者ID：メール形式への変換', () => {
+  assert.equal(adminIdToEmail(' Alice_01 '), 'alice_01@admin.invalid');
+});
+
+test('管理者ログイン：ID・パスワードの形式', () => {
+  assert.equal(validateAdminLogin({ adminId: 'abc', password: '12345678' }).ok, true);
+  assert.equal(validateAdminLogin({ adminId: 'ab', password: '12345678' }).ok, false);
+  assert.equal(validateAdminLogin({ adminId: 'a@b', password: '12345678' }).ok, false);
+  assert.equal(validateAdminLogin({ adminId: 'abc', password: '1234567' }).ok, false);
+});
+
+test('管理者申請：表示名と確認用パスワード', () => {
+  const base = { adminId: 'abc', password: '12345678', passwordConfirm: '12345678', displayName: '山田' };
+  assert.equal(validateAdminSignup(base).ok, true);
+  assert.equal(validateAdminSignup({ ...base, displayName: ' ' }).ok, false);
+  assert.equal(validateAdminSignup({ ...base, displayName: 'あ'.repeat(21) }).ok, false);
+  assert.equal(validateAdminSignup({ ...base, passwordConfirm: 'x' }).ok, false);
 });

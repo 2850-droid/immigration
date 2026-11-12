@@ -80,3 +80,7 @@ button {
 }
 
 button:disabled { opacity: 0.6; cursor: default; }
+
+button.secondary { margin-top: 16px; background: transparent; color: var(--text); border: 1px solid var(--border); }
+button.link { width: auto; padding: 4px 0; background: none; color: var(--accent); text-decoration: underline; font-weight: 400; }
+input[type="password"] { font-family: inherit; }
