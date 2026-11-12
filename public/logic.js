@@ -119,3 +119,33 @@ export function validateAdminSignup({ adminId, password, passwordConfirm, displa
   result.values.displayName = displayNameValue;
   return result;
 }
+
+// ---- 招待の作成 ----
+
+const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32種類（I、O、0、1を除く）
+
+// 招待URLのトークンを16文字で作る。randomBytes は crypto.getRandomValues を渡す。
+// 32種類なので、256 を32で割った余りは偏りなし
+export function generateToken(getRandomValues = (a) => globalThis.crypto.getRandomValues(a)) {
+  const bytes = getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => TOKEN_CHARS[b % 32]).join('');
+}
+
+// 移民予定月の選択肢：指定の月から count か月分（'2026-11', '2026-12', …）
+export function monthOptions(now, count = 12) {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+export const NOTE_MAX = 100;
+
+export function validateNote(note) {
+  const value = String(note ?? '').trim();
+  if ([...value].length > NOTE_MAX) return { ok: false, error: `メモは${NOTE_MAX}文字までにしてください`, value };
+  if (/[\u0000-\u001f\u007f]/.test(value)) return { ok: false, error: 'メモに使えない文字が含まれています', value };
+  return { ok: true, error: '', value };
+}

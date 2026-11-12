@@ -16,10 +16,17 @@ import {
   getDocs,
   collection,
   writeBatch,
+  Timestamp,
+  query,
+  orderBy,
+  limit,
   serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
-import { adminIdToEmail, validateAdminLogin, validateAdminSignup, ADMIN_NAME_MAX } from './logic.js';
+import {
+  adminIdToEmail, validateAdminLogin, validateAdminSignup, ADMIN_NAME_MAX,
+  generateToken, monthOptions, validateNote, formatMonth, judgeState, NOTE_MAX,
+} from './logic.js';
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -177,6 +184,9 @@ function logoutButton() {
 function showDashboard(uid, admin) {
   const roleLabel = admin.role === 'owner' ? 'オーナー' : '移民管理者';
   const nodes = [card('移民管理', `${admin.displayName ?? ''}さん（${roleLabel}）としてログイン中です。`)];
+  const invitesHolder = h('div');
+  nodes.push(invitesHolder);
+  renderInvitePanel(invitesHolder, uid);
   if (admin.role === 'owner') {
     const holder = h('div');
     nodes.push(holder);
@@ -184,6 +194,108 @@ function showDashboard(uid, admin) {
   }
   nodes.push(logoutButton());
   show(...nodes);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// 招待URL。管理画面と同じフォルダの index.html に、#トークン を付ける
+function inviteUrl(token) {
+  return new URL(`./#${token}`, location.href).href;
+}
+
+// URLの表示欄とコピーボタン
+function urlBox(token) {
+  const url = inviteUrl(token);
+  const input = h('input', { type: 'text', readonly: '', value: url, 'aria-label': '招待URL' });
+  input.addEventListener('focus', () => input.select());
+  const copy = h('button', { type: 'button', class: 'secondary' }, 'URLをコピー');
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      copy.textContent = 'コピーしました';
+    } catch {
+      input.select();
+      copy.textContent = '長押しでコピーしてください';
+    }
+  });
+  return h('div', { class: 'field' }, input, copy);
+}
+
+// 招待の作成と、最近の招待の一覧。月ごとの枠・種別・確定・取消は、このあと順に作る
+async function renderInvitePanel(holder, uid) {
+  const result = h('div');
+  const month = h('select', { id: 'month' }, ...monthOptions(new Date()).map((m) => h('option', { value: m }, formatMonth(m))));
+  const note = h('input', { id: 'note', type: 'text', autocomplete: 'off', maxlength: String(NOTE_MAX) });
+  const noteError = h('p', { class: 'error' });
+  const button = h('button', { type: 'submit' }, '招待を作る');
+  const form = h(
+    'form',
+    { novalidate: '' },
+    h('div', { class: 'field' }, h('label', { for: 'month' }, '移民予定月'), month),
+    h('div', { class: 'field' }, h('label', { for: 'note' }, '送付先メモ ', h('span', { class: 'hint' }, '任意。誰に送るかの目印（管理者だけが見られます）')), note, noteError),
+    button,
+  );
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const n = validateNote(note.value);
+    noteError.textContent = n.error;
+    if (!n.ok) return;
+    button.disabled = true;
+    try {
+      let days = 3;
+      try {
+        const snap = await getDoc(doc(db, 'settings', 'slots'));
+        const v = snap.exists() ? snap.data().inviteExpiryDays : null;
+        if (Number.isInteger(v) && v >= 1 && v <= 30) days = v;
+      } catch {
+        // 設定を読めなければ、既定の3日
+      }
+      const token = generateToken();
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'invites', token), {
+        scheduledMonth: month.value,
+        inviteType: '未定',
+        status: '招待済み',
+        expiresAt: Timestamp.fromMillis(Date.now() + days * DAY_MS),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(doc(db, 'invite_notes', token), { sendNote: n.value, createdBy: uid, createdAt: serverTimestamp() });
+      await batch.commit();
+      note.value = '';
+      result.replaceChildren(
+        card('招待を作りました', `${formatMonth(month.value)}の招待です。有効期限は${days}日間です。このURLをゲーム内の個人チャットで送ってください。`, urlBox(token)),
+      );
+      await loadList();
+    } catch {
+      result.replaceChildren(h('p', { class: 'error' }, '招待を作れませんでした。時間をおいて、もう一度お試しください。'));
+    }
+    button.disabled = false;
+  });
+
+  const list = h('div');
+  async function loadList() {
+    try {
+      const snap = await getDocs(query(collection(db, 'invites'), orderBy('createdAt', 'desc'), limit(20)));
+      const rows = snap.docs.map((d) => {
+        const data = d.data();
+        const state = judgeState(data, Date.now());
+        const row = h('li', { class: 'row' }, h('span', {}, `${formatMonth(data.scheduledMonth) ?? ''}　${state}`));
+        const show = h('button', { type: 'button', class: 'secondary' }, 'URLを表示');
+        show.addEventListener('click', () => {
+          show.replaceWith(urlBox(d.id));
+        });
+        if (state === '招待済み') row.append(show);
+        return row;
+      });
+      list.replaceChildren(card('最近の招待', rows.length ? h('ul', { class: 'list' }, ...rows) : 'まだ招待はありません。'));
+    } catch {
+      list.replaceChildren(card('最近の招待', '読み込めませんでした。'));
+    }
+  }
+
+  holder.replaceChildren(card('招待を作る', form), result, list);
+  await loadList();
 }
 
 // オーナー用：承認待ちの申請と、移民管理者の名簿

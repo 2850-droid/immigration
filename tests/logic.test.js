@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseToken, validateRegistration, judgeState, formatMonth,
   adminIdToEmail, validateAdminLogin, validateAdminSignup,
+  generateToken, monthOptions, validateNote,
 } from '../public/logic.js';
 
 test('トークン：正しい形式、小文字・ハイフン・空白は許す', () => {
@@ -94,4 +95,27 @@ test('管理者申請：表示名と確認用パスワード', () => {
   assert.equal(validateAdminSignup({ ...base, displayName: ' ' }).ok, false);
   assert.equal(validateAdminSignup({ ...base, displayName: 'あ'.repeat(21) }).ok, false);
   assert.equal(validateAdminSignup({ ...base, passwordConfirm: 'x' }).ok, false);
+});
+
+test('トークン生成：16文字、使える文字だけ、毎回違う', () => {
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const t = generateToken();
+    assert.match(t, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{16}$/);
+    assert.equal(parseToken('#' + t), t);
+    seen.add(t);
+  }
+  assert.equal(seen.size, 200);
+});
+
+test('月の選択肢：年またぎ', () => {
+  const m = monthOptions(new Date(2026, 10, 12), 3);
+  assert.deepEqual(m, ['2026-11', '2026-12', '2027-01']);
+});
+
+test('メモ：100文字まで・制御文字なし', () => {
+  assert.equal(validateNote('').ok, true);
+  assert.equal(validateNote('あ'.repeat(100)).ok, true);
+  assert.equal(validateNote('あ'.repeat(101)).ok, false);
+  assert.equal(validateNote('a\nb').ok, false);
 });
