@@ -363,13 +363,19 @@ async function renderWorkPanel(holder, uid) {
       rows = await Promise.all(
         snap.docs.map(async (d) => {
           let copied = false;
+          let sendNote = '';
+          let adminMemo = '';
           try {
             const n = await getDoc(doc(db, 'invite_notes', d.id));
-            copied = n.exists() && !!n.data().copiedAt;
+            if (n.exists()) {
+              copied = !!n.data().copiedAt;
+              sendNote = n.data().sendNote ?? '';
+              adminMemo = n.data().adminMemo ?? '';
+            }
           } catch {
-            // 印を読めなければ、未コピーとして扱う
+            // 読めなければ、未コピー・メモなしとして扱う
           }
-          return { token: d.id, data: d.data(), copied };
+          return { token: d.id, data: d.data(), copied, sendNote, adminMemo };
         }),
       );
     } catch {
@@ -396,7 +402,12 @@ async function renderWorkPanel(holder, uid) {
       const idText = h('span', { class: 'work-id' }, r.data.gameId ?? '');
       const copyBtn = h('button', { type: 'button' }, 'IDをコピー');
       const undoBtn = h('button', { type: 'button', class: 'secondary small' }, '未コピーに戻す');
-      const li = h('li', { class: 'row work' }, label, idText, copyBtn, undoBtn);
+      const infoLines = [
+        h('span', { class: 'work-info' }, `国番号：${r.data.countryNo ?? ''}`),
+        r.adminMemo ? h('span', { class: 'work-info' }, `メモ：${r.adminMemo}`) : null,
+        r.sendNote ? h('span', { class: 'work-info' }, `送付先メモ：${r.sendNote}`) : null,
+      ].filter(Boolean);
+      const li = h('li', { class: 'row work' }, label, idText, ...infoLines, copyBtn, undoBtn);
       const paint = () => {
         li.classList.toggle('done', r.copied);
         copyBtn.textContent = r.copied ? '✓ コピー済み（もう一度コピー）' : 'IDをコピー';
