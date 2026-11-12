@@ -100,3 +100,9 @@ select { width: 100%; padding: 10px 12px; font-size: 1rem; border: 1px solid var
 .row.work.done button:first-of-type { background: var(--muted); }
 .badge { font-size: 0.8rem; font-weight: 400; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
 button.small { padding: 6px; font-size: 0.85rem; font-weight: 400; }
+
+.who { margin: 0 0 8px; }
+.tabs { display: flex; gap: 6px; position: sticky; top: 0; z-index: 1; padding: 8px 0; margin-bottom: 12px; background: var(--bg); }
+button.tab { flex: 1; width: auto; padding: 10px 4px; font-size: 0.95rem; color: var(--text); background: var(--card); border: 1px solid var(--border); }
+button.tab.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+[hidden] { display: none !important; }

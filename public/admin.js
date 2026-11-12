@@ -186,24 +186,50 @@ function logoutButton() {
 
 // 承認済みの管理者の画面。招待・一覧などは、このあと順に作る
 function showDashboard(uid, admin) {
-  const roleLabel = admin.role === 'owner' ? 'オーナー' : '移民管理者';
-  const nodes = [card('移民管理', `${admin.displayName ?? ''}さん（${roleLabel}）としてログイン中です。`)];
-  const workHolder = h('div');
-  nodes.push(workHolder);
-  renderWorkPanel(workHolder, uid);
-  const slotsHolder = h('div');
-  nodes.push(slotsHolder);
-  renderSlotsPanel(slotsHolder, admin.role === 'owner');
-  const invitesHolder = h('div');
-  nodes.push(invitesHolder);
-  renderInvitePanel(invitesHolder, uid);
-  if (admin.role === 'owner') {
-    const holder = h('div');
-    nodes.push(holder);
-    renderOwnerPanel(holder, uid);
+  const isOwner = admin.role === 'owner';
+  const roleLabel = isOwner ? 'オーナー' : '移民管理者';
+  const header = h('p', { class: 'muted who' }, `${admin.displayName ?? ''}さん（${roleLabel}）`);
+
+  // タブごとの中身。選んでいないタブは隠すだけで、作り直さない（入力途中の内容が消えない）
+  const tabs = [
+    { id: 'work', label: '作業', render: (el) => renderWorkPanel(el, uid) },
+    { id: 'invites', label: '招待', render: (el) => renderInvitePanel(el, uid) },
+    { id: 'slots', label: '枠', render: (el) => renderSlotsPanel(el, isOwner) },
+  ];
+  if (isOwner) tabs.push({ id: 'admins', label: '管理者', render: (el) => renderOwnerPanel(el, uid) });
+
+  let saved = null;
+  try {
+    saved = localStorage.getItem('adminTab');
+  } catch {
+    // 保存できなくても、先頭のタブで開くだけ
   }
-  nodes.push(logoutButton());
-  show(...nodes);
+  let activeId = tabs.some((t) => t.id === saved) ? saved : tabs[0].id;
+
+  const bar = h('div', { class: 'tabs', role: 'tablist' });
+  for (const t of tabs) {
+    t.panel = h('div', { role: 'tabpanel' });
+    t.button = h('button', { type: 'button', role: 'tab', class: 'tab' }, t.label);
+    t.button.addEventListener('click', () => select(t.id));
+    bar.append(t.button);
+    t.render(t.panel);
+  }
+  function select(id) {
+    activeId = id;
+    for (const t of tabs) {
+      const on = t.id === id;
+      t.panel.hidden = !on;
+      t.button.classList.toggle('active', on);
+      t.button.setAttribute('aria-selected', String(on));
+    }
+    try {
+      localStorage.setItem('adminTab', id);
+    } catch {
+      // 保存できなくても動作に影響はない
+    }
+  }
+  select(activeId);
+  show(header, bar, ...tabs.map((t) => t.panel), logoutButton());
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
