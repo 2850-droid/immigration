@@ -1,0 +1,61 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 管理者かどうか：admins コレクションに、ログイン中のアカウントIDの文書がある人
+    function isAdmin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // 入力形式（設計書 9.1）
+    function validGameId(v)   { return v is string && v.matches('^[0-9]{9}$'); }
+    function validCountry(v)  { return v is string && v.matches('^[0-9]{4}$'); }
+    // 同盟は任意：空文字、または大文字アルファベット3文字
+    function validAlliance(v) { return v is string && v.matches('^([A-Z]{3})?$'); }
+
+    // 登録者による「登録」（招待済み → 登録済み）の条件（設計書 9.5）
+    function isRegistration() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return before.status == '招待済み'
+        && request.time < before.expiresAt
+        && after.status == '登録済み'
+        && after.diff(before).affectedKeys()
+             .hasOnly(['gameId', 'countryNo', 'alliance', 'status', 'registeredAt', 'updatedAt'])
+        && validGameId(after.gameId)
+        && validCountry(after.countryNo)
+        && validAlliance(after.alliance)
+        && after.registeredAt == request.time
+        && after.updatedAt == request.time;
+    }
+
+    // 招待。文書IDが招待URLのトークン
+    match /invites/{token} {
+      // トークンを知っている人は、その1件だけ読める。一覧は管理者だけ
+      allow get: if true;
+      allow list: if isAdmin();
+      // 作成・削除は管理者だけ
+      allow create, delete: if isAdmin();
+      // 更新は、管理者、または上の条件を満たす「登録」だけ
+      allow update: if isAdmin() || isRegistration();
+    }
+
+    // 管理者用メモ（送付先メモ・管理者メモ）
+    match /invite_notes/{token} {
+      allow read, write: if isAdmin();
+    }
+
+    // 枠などの設定
+    match /settings/{name} {
+      allow read, write: if isAdmin();
+    }
+
+    // 管理者の名簿。本人が自分の文書を読めるだけ。追加はコンソールから手動
+    match /admins/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow list, write: if false;
+    }
+  }
+}

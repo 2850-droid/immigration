@@ -1,0 +1,14 @@
+{
+  "name": "immigration-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "emulators": "firebase emulators:start --project demo-immigration",
+    "seed": "node scripts/seed.js",
+    "test": "firebase emulators:exec --only firestore --project demo-immigration \"node --test tests/\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase": "^10.12.2"
+  }
+}
