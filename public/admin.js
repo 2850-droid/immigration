@@ -554,6 +554,24 @@ async function renderSlotsPanel(holder, isOwner) {
   await load();
 }
 
+// 変更先の月の枠が足りないときの警告文。足りていれば空文字
+async function roomWarning(data, targetMonth) {
+  try {
+    const [sSnap, iSnap] = await Promise.all([getDoc(doc(db, 'settings', 'slots')), getDocs(collection(db, 'invites'))]);
+    const row = computeSlots(iSnap.docs.map((d) => d.data()), sSnap.exists() ? sSnap.data() : {}, [targetMonth], Date.now())[0];
+    const label = formatMonth(targetMonth);
+    if (data.inviteType === '特別') {
+      if (!row.special) return `${label}の特別枠が未設定です。`;
+      if (row.special.left <= 0) return `${label}の特別枠は満員です（残り${row.special.left}/${row.special.total}）。`;
+    } else if (row.normal.left <= 0) {
+      return `${label}の普通枠は満員です（残り${row.normal.left}/${row.normal.total}）。`;
+    }
+    return '';
+  } catch {
+    return '枠の状況を確認できませんでした。';
+  }
+}
+
 // 招待1件の詳細と操作：種別の決定、確定、取消、期限の延長、メモ
 async function renderInviteDetail(box, token, data, state, uid, reload) {
   box.style.flex = '1 1 100%';
@@ -579,8 +597,9 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
     try {
       await fn();
       await reload();
-    } catch {
-      message.textContent = '操作できませんでした。時間をおいて、もう一度お試しください。';
+    } catch (err) {
+      // 確認ダイアログでやめた場合は、エラー表示を出さない
+      message.textContent = err && err.message === 'cancelled' ? '' : '操作できませんでした。時間をおいて、もう一度お試しください。';
       button.disabled = false;
     }
   }
@@ -617,6 +636,35 @@ async function renderInviteDetail(box, token, data, state, uid, reload) {
             // 既定の3日
           }
           await update({ expiresAt: Timestamp.fromMillis(Date.now() + days * DAY_MS) });
+        });
+      }),
+    );
+  }
+
+  if (state === '招待済み' || state === '登録済み' || state === '確定') {
+    // 予定月の変更。枠が満員でも、管理者の判断で変更できる（警告は出す）
+    const now = new Date();
+    const options = monthOptions(new Date(now.getFullYear(), now.getMonth() - 1, 1), 14);
+    if (!options.includes(data.scheduledMonth)) options.unshift(data.scheduledMonth);
+    const monthSelect = h('select', { 'aria-label': '移民予定月' }, ...options.map((m) => h('option', { value: m }, formatMonth(m) ?? m)));
+    monthSelect.value = data.scheduledMonth;
+    children.push(
+      h('div', { class: 'field' }, h('label', {}, '移民予定月を変更 ', h('span', { class: 'hint' }, '登録者の画面の表示も変わります')), monthSelect),
+      btn('予定月を変更する', 'secondary', (b) => {
+        const target = monthSelect.value;
+        if (target === data.scheduledMonth) {
+          message.textContent = '今の予定月と同じです。';
+          return;
+        }
+        run(b, async () => {
+          const warning = await roomWarning(data, target);
+          const text = `予定月を${formatMonth(data.scheduledMonth) ?? data.scheduledMonth}から${formatMonth(target)}に変更しますか？${warning ? `\n\n注意：${warning}` : ''}`;
+          if (!confirm(text)) throw new Error('cancelled');
+          const batch = writeBatch(db);
+          batch.update(doc(db, 'invites', token), { scheduledMonth: target, updatedAt: serverTimestamp() });
+          // 月が変わると作業をやり直すので、コピー済みの印は外す
+          batch.set(doc(db, 'invite_notes', token), { copiedAt: deleteField(), copiedBy: deleteField() }, { merge: true });
+          await batch.commit();
         });
       }),
     );
